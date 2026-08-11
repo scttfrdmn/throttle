@@ -74,6 +74,20 @@ var (
 	// ErrWaitTooLong means the request would become affordable, but not within
 	// the caller's deadline or the configured maximum wait.
 	ErrWaitTooLong = errors.New("engine: wait exceeds the allowed limit")
+
+	// ErrCostUnknown means the request could not be priced, so an enforced budget
+	// has no monetary exposure to check it against.
+	//
+	// Enforcing a dollar budget requires knowing how many dollars are at stake.
+	// When the price is unknown, an enforced budget denies: the alternative is to
+	// admit unbounded spend while every report shows the budget untouched. A
+	// monitored budget admits the same request and records the cost as explicitly
+	// unpriced, because monitor mode's job is to observe rather than to prevent.
+	ErrCostUnknown = errors.New("engine: cost is unknown")
+
+	// ErrCostUnresolved means a completed request's actual cost could not be fully
+	// determined, so its reservation stays encumbered pending reconciliation.
+	ErrCostUnresolved = errors.New("engine: actual cost is unresolved")
 )
 
 // Clock supplies the current time. Tests inject a deterministic clock; the
@@ -399,6 +413,11 @@ type Decision struct {
 	// Admitted reports whether the caller may proceed. In monitor mode this is
 	// true even when the envelope is exceeded, because monitor mode never blocks.
 	Admitted bool
+
+	// CostUnknown reports that the request was admitted without a price. Only
+	// possible under monitor mode, and it means the hold is zero because no amount
+	// could be determined -- not because the request costs nothing.
+	CostUnknown bool
 }
 
 // combine reduces per-scope verdicts to the one the caller experiences.
@@ -521,6 +540,11 @@ type Transaction struct {
 	mu          sync.Mutex
 	reservation ledger.Reservation
 	resolved    bool
+
+	// unresolved marks a completed request whose cost could not be determined. Its
+	// hold stays pending on purpose: see MarkUnresolved.
+	unresolved bool
+	actual     usage.Actual
 }
 
 // Decision returns the admission decision that authorized this transaction.
@@ -546,9 +570,19 @@ func (e *Engine) Begin(ctx context.Context, req Request) (*Transaction, Decision
 	if req.RequestID == "" && req.ReservationID == "" {
 		return nil, Decision{}, errors.New("engine: request id or reservation id is required")
 	}
-	estimate := req.Estimate.Cost
-	if estimate < 0 {
-		return nil, Decision{}, errors.New("engine: estimated cost cannot be negative")
+
+	// An unpriced estimate has nothing to reserve, and what to do about that
+	// depends on posture -- so the chain is evaluated first, with a zero estimate,
+	// purely to learn the effective mode. Enforce cannot honestly govern spend it
+	// cannot measure and denies; monitor admits and records the cost as unpriced.
+	// Neither ever substitutes a guess or a zero amount.
+	priced := req.Estimate.Cost.Known()
+	estimate := money.Money(0)
+	if priced {
+		estimate = req.Estimate.Cost.Amount
+		if estimate < 0 {
+			return nil, Decision{}, errors.New("engine: estimated cost cannot be negative")
+		}
 	}
 
 	now := e.clock()
@@ -557,6 +591,27 @@ func (e *Engine) Begin(ctx context.Context, req Request) (*Transaction, Decision
 		return nil, Decision{}, err
 	}
 	dec := combine(links, req.BudgetID, estimate)
+
+	if !priced {
+		reason := req.Estimate.Cost.Reason
+		if reason == "" {
+			reason = "no cost estimate was supplied"
+		}
+		if dec.Mode != ModeMonitor {
+			dec.Admitted = false
+			dec.Outcome = budget.OutcomeDeny
+			dec.Reason = "cost is unknown: " + reason
+			if dec.BindingBudgetID == "" {
+				dec.BindingBudgetID = req.BudgetID
+			}
+			return nil, dec, fmt.Errorf("%w: %s", ErrCostUnknown, reason)
+		}
+		// Monitor mode admits it. The hold is zero because there is no amount to
+		// hold, not because the request is free -- the activity record carries the
+		// unpriced cost so the gap is visible rather than implied.
+		dec.CostUnknown = true
+	}
+
 	if !dec.Admitted {
 		return nil, dec, fmt.Errorf("%w: %s", ErrDenied, dec.Reason)
 	}
@@ -654,16 +709,27 @@ func (e *Engine) refuse(ctx context.Context, budgetID string, estimate money.Mon
 //
 // The actual cost is authoritative even when it exceeds the reservation: the
 // overrun is recorded rather than hidden.
+//
+// An actual cost that is not fully known does not settle. It is marked unresolved
+// instead: see MarkUnresolved. Settling a partial amount as though it were the
+// total would understate real spend in a way no later reader could detect.
 func (t *Transaction) Settle(ctx context.Context, actual usage.Actual) (ledger.Charge, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.resolved {
 		return ledger.Charge{}, ledger.ErrAlreadyResolved
 	}
+	if !actual.Cost.Known() {
+		reason := actual.Cost.Reason
+		if reason == "" {
+			reason = "the provider reported usage that could not be priced"
+		}
+		return ledger.Charge{}, fmt.Errorf("%w: %s", ErrCostUnresolved, reason)
+	}
 
 	c, err := t.engine.ledger.Settle(ctx, ledger.Settlement{
 		ReservationID: t.reservation.ID,
-		ActualCost:    actual.Cost,
+		ActualCost:    actual.Cost.Amount,
 		Usage:         actual,
 		CompletedAt:   t.engine.clock(),
 	})
@@ -674,6 +740,50 @@ func (t *Transaction) Settle(ctx context.Context, actual usage.Actual) (ledger.C
 	return c, nil
 }
 
+// MarkUnresolved records that a completed request's cost could not be determined,
+// leaving its reservation encumbered.
+//
+// This is the settlement path for a request that really ran and really cost money
+// throttle cannot yet name -- because the provider billed a dimension the captured
+// quote has no rate for, or because the model was never priced at all.
+//
+// Every other outcome would be a lie. Releasing the hold would claim the money
+// back as available when it has already been spent. Settling at zero, or at the
+// partial total of only the dimensions that happened to be priced, would report a
+// number that is definitely too low as though it were right. So the hold stays:
+// the reserved amount remains encumbered headroom, the usage is preserved, and the
+// request is visible as owing a price.
+//
+// The reservation keeps its lease. An unresolved liability that outlives its lease
+// stops blocking headroom the same way any other expired hold does -- a crashed
+// process must not freeze a budget forever -- and remains settleable once pricing
+// arrives.
+func (t *Transaction) MarkUnresolved(ctx context.Context, actual usage.Actual) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.resolved {
+		return ledger.ErrAlreadyResolved
+	}
+	if actual.Cost.Known() {
+		return errors.New("engine: cost is known; settle it rather than marking it unresolved")
+	}
+	// Deliberately no ledger write. The pending reservation IS the record of
+	// encumbrance, and the activity record carries the usage and the unpriced
+	// dimensions. Inventing an "unresolved" ledger state would mean a second way
+	// for money to be outstanding, and the lease mechanism already covers it.
+	t.unresolved = true
+	t.actual = actual
+	return nil
+}
+
+// Unresolved reports whether this transaction ended with a cost it could not
+// determine, leaving its reservation encumbered.
+func (t *Transaction) Unresolved() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.unresolved
+}
+
 // Release returns the hold, across its whole scope chain, without recording a
 // charge. It must only be used when no billable usage occurred; if the provider
 // billed for a failed call, settle the real amount instead.
@@ -682,6 +792,11 @@ func (t *Transaction) Release(ctx context.Context) error {
 	defer t.mu.Unlock()
 	if t.resolved {
 		return ledger.ErrAlreadyResolved
+	}
+	if t.unresolved {
+		// The request ran and incurred cost. Freeing the hold would report the
+		// money as available again when it has already been spent.
+		return fmt.Errorf("%w: cannot release an unresolved liability", ErrCostUnresolved)
 	}
 	if err := t.engine.ledger.Release(ctx, t.reservation.ID); err != nil {
 		return err

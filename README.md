@@ -48,7 +48,9 @@ Scope for the first release is the [`v0.1.0` milestone](https://github.com/scttf
 
 ## Status
 
-The local core is implemented and tested; **no provider adapter exists yet**.
+The local core is implemented and tested, and governed AWS Bedrock `Converse`,
+`ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime`
+calls work end to end.
 
 Working today:
 
@@ -57,9 +59,17 @@ Working today:
 - `ledger` — the reservation contract, plus a conformance suite that is its executable specification
 - `ledger/sqlite` — durable budget definitions, materialized periods, atomic hierarchical reservations, lease renewal, crash recovery
 - `engine` — admission decisions, `estimate → reserve → execute → reconcile`, bounded waiting, period advancement
-- `cmd/throttle` — define and inspect budgets
+- `usage` — dimensional usage and model identity, where an unrecognized model is a representable state rather than an error, and a cost is known, partly known, or explicitly unknown — never silently zero; every dimension has a canonical integer unit, so a provider's decimal resource quantity is converted exactly rather than stored as a float
+- `pricing` — exact integer rates with provenance, effective dates, and local overrides, quoted once at admission and replayed at settlement so a price change mid-request cannot rewrite what a request cost; for a request whose models are unknowable in advance, the whole candidate rate set is frozen in one read instead
+- `activity`, `activity/sqlite` — durable, content-free per-request records: usage, cost and its completeness, the captured quote, the compound detail of an agent turn, the reconciliation linkage of a hosted runtime invocation, and the enforcement posture that actually governed the call
+- `provider/bedrock` — governed `Converse`, `ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime`: preflight estimation, response reconciliation, durable activity, and explicit behavior for cancellation, provider errors, unpriceable costs, and ambiguous outcomes
+- `reconcile` — repairs bookkeeping a crashed process left half-finished, from durable state alone: it completes a stalled transition when the two stores already hold enough authoritative information to complete it truthfully, prices a replayed settlement with the quote captured at admission rather than any current catalog, and leaves a genuinely unknown cost explicitly unknown instead of tidying it into a zero
+- `cmd/throttle` — define and inspect budgets, and repair stranded bookkeeping
 
-Next: the AWS Bedrock adapter (`Converse`, `ConverseStream`, `InvokeAgent`).
+Not yet: the local dashboard, providers other than Bedrock, and the worker that
+ingests delayed AgentCore runtime-resource usage — the data model and the join keys
+for it exist, the ingestion does not. Pricing ships as a versioned fixture catalog
+rather than a live AWS Price List sync.
 
 ```bash
 make check
@@ -77,7 +87,196 @@ go run ./cmd/throttle define -id agents -parent research -budget 150
 
 # Is a $2.50 request admissible right now, and if not, which budget said no?
 go run ./cmd/throttle status -id agents -chain -estimate 2.50
+
+# After a crash: what bookkeeping is half-finished, and what would repairing it do?
+go run ./cmd/throttle reconcile -dry-run
 ```
+
+A crash between the ledger write and the activity write leaves the two stores
+disagreeing, so `reconcile` finishes the bookkeeping from durable state — and only
+where the durable state already says what happened. A request whose outcome is
+genuinely unknown stays unknown and stays encumbered; it does not become a tidy zero:
+
+```text
+scanned 18 / repaired 3 / consistent 10 / unresolved 3 / awaiting data 2
+```
+
+Governing a Bedrock call is a shim around the real client, not a replacement for
+it — the request and response are the SDK's own types:
+
+```go
+client, err := bedrock.New(bedrock.Config{
+	Client:   bedrockruntime.NewFromConfig(awsCfg),
+	Counter:  bedrockruntime.NewFromConfig(awsCfg), // optional: preflight token counts
+	Engine:   eng,
+	Catalog:  cat,
+	Activity: acts, // optional: durable, content-free per-request records
+	Region:   "us-east-1",
+})
+
+res, err := client.Converse(ctx, bedrock.Request{
+	BudgetID: "agents",
+	Input:    &bedrockruntime.ConverseInput{ /* unchanged, passed through verbatim */ },
+})
+// res.Output is Bedrock's own *ConverseOutput.
+// res.Estimate, res.Usage, res.Cost, and res.Charge are the accounting.
+// res.Cost may be legitimately unknown while res.Usage is known: throttle reports
+// that it cannot price a request rather than pricing it at zero.
+```
+
+Under enforcement, a request throttle cannot price is denied before the provider is
+called — a dollar budget cannot be honestly enforced against exposure that cannot
+be determined. Under monitoring the same request runs, and its cost is recorded as
+explicitly unknown.
+
+Streaming keeps the SDK's read loop and stays streaming — events are forwarded one
+at a time with ordinary backpressure, never buffered or replayed:
+
+```go
+client, err := bedrock.New(bedrock.Config{
+	// ...as above, plus:
+	StreamClient: bedrock.Streaming(bedrockruntime.NewFromConfig(awsCfg)),
+})
+
+stream, err := client.ConverseStream(ctx, bedrock.StreamRequest{
+	BudgetID: "agents",
+	Input:    &bedrockruntime.ConverseStreamInput{ /* passed through verbatim */ },
+})
+if err != nil {
+	return err
+}
+defer stream.Close()
+
+for ev := range stream.Events() { // Bedrock's own event types, as they arrive
+	switch v := ev.(type) { /* ... */ }
+}
+if err := stream.Close(); err != nil { // idempotent; settles, then reports
+	return err
+}
+// stream.Result() is the accounting, available once the stream is terminal.
+```
+
+Bedrock reports token usage only in the terminal metadata event, so a stream that
+ends before it — closed early, cancelled, abandoned, or broken — leaves a request
+that ran and cannot be measured. throttle keeps the reservation encumbered and
+records the outcome as unknown rather than releasing it: the caller stopping is a
+fact about the caller, not about the model. Only a `ConverseStream` call that failed
+before any stream existed releases its hold.
+
+A managed agent turn is one governed transaction that may invoke a foundation model
+many times:
+
+```go
+client, err := bedrock.New(bedrock.Config{
+	// ...as above, plus:
+	AgentClient: bedrock.Agent(bedrockagentruntime.NewFromConfig(awsCfg)),
+})
+
+stream, err := client.InvokeAgent(ctx, bedrock.AgentRequest{
+	BudgetID: "agents",
+	Input:    &bedrockagentruntime.InvokeAgentInput{ /* passed through verbatim */ },
+	MaxCost:  maxCost, // the declared ceiling, and the amount held
+})
+if err != nil {
+	return err
+}
+defer stream.Close()
+
+for ev := range stream.Events() { // chunks, traces, return-control — all of them
+	switch v := ev.(type) { /* ... */ }
+}
+if err := stream.Close(); err != nil {
+	return err
+}
+// stream.Result().Cost is the whole turn. Result().Steps and Result().Agent.Steps
+// are the individual model invocations beneath it.
+```
+
+`MaxCost` is a **declaration, not a cap**: AWS does not stop the agent at throttle's
+number, so the estimate is labelled a heuristic and the actual cost may exceed the hold.
+throttle cannot estimate an agent turn any other way — the API takes an agent
+identifier, the agent decides how many models to invoke and with what prompts, and
+counting the caller's tokens would count prompts the agent never sends.
+
+There is **one reservation and one charge**, because throttle admitted the outer
+invocation and not the model calls inside it. Those are recorded as accounting detail
+beneath the transaction: per-step kind, model, usage, and cost, so an operator can see
+where a turn's money went. The turn is accumulated exactly and rounded once, so twenty
+small internal calls are charged like one charge rather than rounded twenty times.
+
+throttle enables the service's trace, on a copy of the caller's input, because that is
+the only place per-invocation usage is reported. The trace also carries prompts, model
+responses, reasoning, action payloads, and retrieved passages. All of it reaches the
+caller; **none of it is persisted** — the durable record has nowhere to put it.
+
+Action groups, knowledge-base lookups, and guardrails are counted and never priced. The
+service reports no billable quantity for them, so their cost lands on the AWS bill
+outside throttle's view, and the record says so rather than implying they were free.
+
+### A hosted agent: two places to govern, and only one of them is real-time
+
+AgentCore runs *your own* agent code and bills for the compute it consumed, so there
+are two distinct accounting positions — and the useful one is probably not the one you
+would reach for first.
+
+**Inside the agent** — where the model calls actually happen — you use throttle
+exactly as anywhere else. There is no AgentCore budget type, no AgentCore client, and
+no special import; hosting location does not change model-spend governance:
+
+```go
+// This is the whole integration. It runs unchanged in AgentCore, in Lambda, or on a laptop.
+res, err := client.Converse(ctx, bedrock.Request{BudgetID: "agents", Input: in})
+```
+
+This is the **preferred mechanism for real-time enforcement**, because throttle sees
+each model call before it happens and settles it on measured usage.
+
+**At the edge** — wrapping the invocation itself — throttle governs admission and
+records the identity a later resource observation can be joined to:
+
+```go
+client, err := bedrock.New(bedrock.Config{
+	// ...as above, plus:
+	RuntimeClient: bedrockagentcore.NewFromConfig(awsCfg),
+})
+
+stream, err := client.InvokeAgentRuntime(ctx, bedrock.RuntimeRequest{
+	BudgetID:    "agents",
+	Input:       &bedrockagentcore.InvokeAgentRuntimeInput{ /* passed through verbatim */ },
+	MaxExposure: maxExposure, // how much budget headroom to encumber
+})
+if err != nil {
+	return err
+}
+defer stream.Close()
+
+io.Copy(w, stream) // the runtime's own bytes, forwarded as they arrive
+if err := stream.Close(); err != nil {
+	return err
+}
+```
+
+The response is an opaque body in whatever format your agent produces. throttle
+forwards it and **parses none of it** — not to derive accounting, and not to store.
+
+The edge invocation's cost is **unknown on every path, success included.** AgentCore
+reports CPU and memory consumption later, through observability, and calls those
+figures approximate. throttle will not manufacture a number from what it does have:
+not from latency (billing excludes time your agent waits on a model), not from
+configured CPU and memory (allocation is not consumption), and not from response size.
+Unknown is recorded as unknown, and it never renders as `$0.00`.
+
+`MaxExposure` is named for what it is: **the amount of budget headroom to hold**, not
+a cost, not an estimate, and not a limit AWS will enforce. Nothing stops your runtime
+at throttle's number. Under enforcement an invocation with no declared exposure is
+denied before the call; under monitoring it runs and is flagged cost-unknown.
+
+Because the cost never becomes knowable, every invocation that reached the runtime
+stays **unresolved** with its exposure encumbered, carrying the runtime, endpoint,
+session, and trace identifiers that a later reconciliation would need. Where AWS
+reports resource usage per *session* rather than per invocation, throttle records the
+session and **does not divide its bill** across the invocations that shared it — a
+computed share would be indistinguishable from a measurement.
 
 ## Architectural rules
 
@@ -89,6 +288,7 @@ go run ./cmd/throttle status -id agents -chain -estimate 2.50
 6. Automatic model substitution, prompt rewriting, routing, and other higher-level policy are **not v0.1**.
 7. Never invent or silently freeze provider prices. Pricing data must be sourceable, versioned, and timestamped.
 8. Managed-agent accounting must not claim hard mid-run enforcement when the upstream platform does not expose such a control boundary.
+9. Hosted-runtime resource cost is never inferred from wall-clock time, allocated capacity, or payload size, and a session's bill is never apportioned across the invocations that shared it.
 
 ## Product boundary
 

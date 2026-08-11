@@ -1,0 +1,64 @@
+package provider_test
+
+import (
+	"os/exec"
+	"strings"
+	"testing"
+)
+
+// The adapter boundary is an architectural invariant, so it is tested rather than
+// merely documented: AWS SDK types must not leak into the provider-neutral core.
+// The budget engine sees money and scopes, never tokens or AWS semantics.
+//
+// This is checked by inspecting the real dependency graph, because a leak would
+// arrive as an innocuous-looking import in a package nobody thought of as
+// provider-specific.
+func TestCoreDoesNotDependOnProviderSDKs(t *testing.T) {
+	neutral := []string{
+		"throttle/budget",
+		"throttle/ledger",
+		"throttle/ledger/sqlite",
+		"throttle/money",
+		"throttle/pricing",
+		"throttle/pricing/fixtures",
+		"throttle/usage",
+		"throttle/engine",
+		"throttle/provider",
+		// Activity is on this list because it is where a leak would be most tempting
+		// and most damaging. A managed agent turn's detail is normalized out of a
+		// provider trace carrying prompts, responses, and reasoning; serializing the
+		// SDK's own trace object would have been the shortest path to writing it, and
+		// would put content in the durable record. An import here is that mistake.
+		"throttle/activity",
+		"throttle/activity/sqlite",
+		// Reconciliation repairs crashed bookkeeping for every provider, so a single
+		// `if provider == ...` in it would become the place provider knowledge
+		// accumulates. It classifies normalized durable facts; an SDK import here would
+		// mean it had started reading provider responses instead.
+		"throttle/reconcile",
+	}
+
+	// Any SDK a provider adapter might pull in. A neutral package must import none
+	// of them.
+	forbidden := []string{
+		"aws-sdk-go",
+		"openai",
+		"anthropic-sdk",
+	}
+
+	for _, pkg := range neutral {
+		t.Run(pkg, func(t *testing.T) {
+			out, err := exec.Command("go", "list", "-deps", pkg).Output()
+			if err != nil {
+				t.Skipf("go list unavailable: %v", err)
+			}
+			for _, dep := range strings.Split(string(out), "\n") {
+				for _, bad := range forbidden {
+					if strings.Contains(dep, bad) {
+						t.Errorf("%s depends on %s: provider SDK types must not reach the budget core", pkg, dep)
+					}
+				}
+			}
+		})
+	}
+}

@@ -112,7 +112,14 @@ func unpaced(id, parent string, allocation money.Money) budget.Definition {
 	return def
 }
 
-func estimate(cost money.Money) usage.Estimate { return usage.Estimate{Cost: cost} }
+func estimate(cost money.Money) usage.Estimate {
+	return usage.Estimate{Cost: usage.KnownCost(cost)}
+}
+
+// spent is the observed cost of a completed request. Tests that care only about
+// budget arithmetic report a known cost; the unknown-cost path is exercised
+// explicitly where it is the subject.
+func spent(cost money.Money) usage.Actual { return usage.Actual{Cost: usage.KnownCost(cost)} }
 
 // racingLedger steals headroom between the engine's advisory read and its
 // reservation, which is the race the ledger's authority exists to settle. Doing it
@@ -183,7 +190,7 @@ func spend(t *testing.T, eng *Engine, id, budgetID string, cost money.Money) led
 	if err != nil {
 		t.Fatalf("Begin(%q): %v", id, err)
 	}
-	c, err := tx.Settle(ctx, usage.Actual{Cost: cost})
+	c, err := tx.Settle(ctx, spent(cost))
 	if err != nil {
 		t.Fatalf("Settle(%q): %v", id, err)
 	}
@@ -422,7 +429,7 @@ func TestBeginReserveExecuteReconcile(t *testing.T) {
 	}
 
 	clock.Advance(time.Minute)
-	c, err := tx.Settle(ctx, usage.Actual{Cost: dollars(9)})
+	c, err := tx.Settle(ctx, spent(dollars(9)))
 	if err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
@@ -449,7 +456,7 @@ func TestSettleRecordsOverrun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := tx.Settle(ctx, usage.Actual{Cost: dollars(25)})
+	c, err := tx.Settle(ctx, spent(dollars(25)))
 	if err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
@@ -492,10 +499,10 @@ func TestDoubleResolveIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(10)}); err != nil {
+	if _, err := tx.Settle(ctx, spent(dollars(10))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(10)}); !errors.Is(err, ledger.ErrAlreadyResolved) {
+	if _, err := tx.Settle(ctx, spent(dollars(10))); !errors.Is(err, ledger.ErrAlreadyResolved) {
 		t.Errorf("second Settle: error = %v, want ErrAlreadyResolved", err)
 	}
 	if err := tx.Release(ctx); !errors.Is(err, ledger.ErrAlreadyResolved) {
@@ -598,7 +605,7 @@ func TestMonitorModeNeverBlocks(t *testing.T) {
 	if dec.Outcome != budget.OutcomeDeny {
 		t.Errorf("outcome = %s, want the honest deny reported alongside admission", dec.Outcome)
 	}
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(99000)}); err != nil {
+	if _, err := tx.Settle(ctx, spent(dollars(99000))); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 	if st, _ := eng.Status(ctx, "research"); !st.Snapshot.Overspent() {
@@ -662,7 +669,7 @@ func TestChildRequestConsumesWholeChain(t *testing.T) {
 		}
 	}
 
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(40)}); err != nil {
+	if _, err := tx.Settle(ctx, spent(dollars(40))); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range ids {
@@ -774,7 +781,7 @@ func TestMonitoredAncestorDoesNotCapTheChild(t *testing.T) {
 		t.Errorf("Mode = %s, want enforce", dec.Mode)
 	}
 	// The monitored ancestor still records the spend.
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(500)}); err != nil {
+	if _, err := tx.Settle(ctx, spent(dollars(500))); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := eng.Status(ctx, "research"); st.Snapshot.Spent != dollars(500) {
@@ -1023,7 +1030,7 @@ func TestRenewPreventsExpiry(t *testing.T) {
 	}
 
 	// And it still settles normally.
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(10)}); err != nil {
+	if _, err := tx.Settle(ctx, spent(dollars(10))); err != nil {
 		t.Fatalf("Settle after renewal: %v", err)
 	}
 }
@@ -1080,7 +1087,7 @@ func TestRenewAfterExpiryIsRefusedButSettlementIsNot(t *testing.T) {
 		t.Errorf("Renew: error = %v, want ErrLeaseExpired", err)
 	}
 	// An expired hold whose request finished anyway must still charge reality.
-	c, err := tx.Settle(ctx, usage.Actual{Cost: dollars(12)})
+	c, err := tx.Settle(ctx, spent(dollars(12)))
 	if err != nil {
 		t.Fatalf("Settle after expiry: %v", err)
 	}
@@ -1124,7 +1131,7 @@ func TestKeepAliveRenewsUntilResolved(t *testing.T) {
 
 	// Let it renew a few times, then finish the request.
 	time.Sleep(50 * time.Millisecond)
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(1)}); err != nil {
+	if _, err := tx.Settle(ctx, spent(dollars(1))); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1449,7 +1456,7 @@ func TestHoldAcrossBoundarySettlesInTheAuthorizingPeriod(t *testing.T) {
 	}
 
 	// It settles for less than it held, and the charge belongs to period 0.
-	if _, err := tx.Settle(ctx, usage.Actual{Cost: dollars(100)}); err != nil {
+	if _, err := tx.Settle(ctx, spent(dollars(100))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := eng.Advance(ctx, "research"); err != nil {
