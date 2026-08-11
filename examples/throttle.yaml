@@ -1,0 +1,35 @@
+# Illustrative only: throttle does not read a config file yet. Budget definitions
+# are persisted in the ledger (see "throttle define"), because a definition
+# repeated per-process is exactly how two processes end up governing the same
+# money by different numbers. This file records the shape a loader would take.
+
+budgets:
+  - id: research
+    name: research-ai
+    allocation: 4000.00 # per period
+    recurrence: monthly
+    timezone: America/New_York # calendar boundaries fall in this zone
+    borrow: 72h # pull the pacing curve forward, not the total
+    rollover:
+      mode: credit # none | credit | balance
+      cap_percent: 25 # cap_percent and cap are mutually exclusive
+      # cap: 500.00
+
+  # Sub-budgets are separate definitions joined by parent_id, not nested structs.
+  # A request against "agents" also consumes "research" in the same transaction.
+  - id: chat
+    parent: research
+    allocation: 1000.00
+  - id: agents
+    parent: research
+    allocation: 2500.00
+  - id: experiments
+    parent: research
+    allocation: 500.00
+
+# Enforcement posture is deliberately absent above: it is a property of the
+# process doing the spending, not an accounting fact about the budget, so it is
+# not persisted with the definition. A process picks monitor | wait | enforce.
+# Within a chain the strictest posture wins.
+
+# Provider adapters and pricing sources are configured separately.

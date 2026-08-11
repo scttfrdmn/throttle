@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Read the version from go.mod so this cannot drift from the module.
+          # modernc.org/sqlite requires Go 1.25, which sets the floor.
+          go-version-file: go.mod
+      - run: gofmt -d . | tee /tmp/gofmt.diff && test ! -s /tmp/gofmt.diff
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
