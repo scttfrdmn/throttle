@@ -121,6 +121,12 @@ func Run(t *testing.T, newStore Factory) {
 		// Reporting.
 		"ChargesAreScopedAndOrdered": testChargesAreScopedAndOrdered,
 		"ChargesWindowIsHalfOpen":    testChargesWindowIsHalfOpen,
+
+		// Reconciliation reads.
+		"ChargeForFindsSettlement":     testChargeForFindsSettlement,
+		"ChargeForUnsettledIsNotFound": testChargeForUnsettledIsNotFound,
+		"ReservationsFilterByState":    testReservationsFilterByState,
+		"ReservationsAreBounded":       testReservationsAreBounded,
 	}
 
 	for name, fn := range tests {
@@ -2108,4 +2114,155 @@ func testChargesWindowIsHalfOpen(t *testing.T, s ledger.Ledger) {
 	if len(got) != 2 {
 		t.Errorf("half-open window returned %d charges, want 2", len(got))
 	}
+}
+
+// --- reconciliation reads --------------------------------------------------
+
+// A reconciler repairing telemetry after a crash has only the reservation ID,
+// and needs the authoritative charge behind it.
+func testChargeForFindsSettlement(t *testing.T, s ledger.Ledger) {
+	ctx := context.Background()
+	mustPut(t, s, monthly("research", "", dollars(1000)))
+	now := base.Add(time.Hour)
+
+	mustReserve(t, s, "r1", "research", dollars(10), now, unlimited("research"))
+	want := mustSettle(t, s, "r1", dollars(7), now.Add(time.Minute))
+
+	got, err := s.ChargeFor(ctx, "r1")
+	if err != nil {
+		t.Fatalf("ChargeFor: %v", err)
+	}
+	if got.ActualCost != want.ActualCost {
+		t.Errorf("ActualCost = %s, want %s", got.ActualCost, want.ActualCost)
+	}
+	if got.ReservedCost != dollars(10) {
+		t.Errorf("ReservedCost = %s, want the amount held, not the amount spent", got.ReservedCost)
+	}
+	if got.RequestID != want.RequestID {
+		t.Errorf("RequestID = %q, want %q", got.RequestID, want.RequestID)
+	}
+	if !got.OccurredAt.Equal(want.OccurredAt) {
+		t.Errorf("OccurredAt = %v, want %v: repair needs the original completion time", got.OccurredAt, want.OccurredAt)
+	}
+	// The legs are what tell a repair which scopes the money actually landed on.
+	if len(got.Legs) != len(want.Legs) {
+		t.Errorf("got %d legs, want %d", len(got.Legs), len(want.Legs))
+	}
+}
+
+// "Never settled" and "never existed" must not look the same: they lead a
+// reconciler to opposite conclusions about whether money moved.
+func testChargeForUnsettledIsNotFound(t *testing.T, s ledger.Ledger) {
+	ctx := context.Background()
+	mustPut(t, s, monthly("research", "", dollars(1000)))
+	now := base.Add(time.Hour)
+
+	mustReserve(t, s, "held", "research", dollars(10), now, unlimited("research"))
+
+	if _, err := s.ChargeFor(ctx, "held"); !errors.Is(err, ledger.ErrChargeNotFound) {
+		t.Errorf("ChargeFor on a pending hold: %v, want ErrChargeNotFound", err)
+	}
+	if _, err := s.ChargeFor(ctx, "never-existed"); !errors.Is(err, ledger.ErrChargeNotFound) {
+		t.Errorf("ChargeFor on an unknown reservation: %v, want ErrChargeNotFound", err)
+	}
+
+	// A released hold is money that did not move, so it has no charge either.
+	mustReserve(t, s, "gone", "research", dollars(10), now, unlimited("research"))
+	if err := s.Release(ctx, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ChargeFor(ctx, "gone"); !errors.Is(err, ledger.ErrChargeNotFound) {
+		t.Errorf("ChargeFor on a released hold: %v, want ErrChargeNotFound", err)
+	}
+}
+
+// The ledger-side survey a reconciliation pass starts from. It must be
+// read-only: unlike RecoverExpired, asking the question must not change the
+// answer.
+func testReservationsFilterByState(t *testing.T, s ledger.Ledger) {
+	ctx := context.Background()
+	mustPut(t, s, monthly("research", "", dollars(1000)))
+	now := base.Add(time.Hour)
+
+	mustReserve(t, s, "pending-1", "research", dollars(1), now, unlimited("research"))
+	mustReserve(t, s, "settled-1", "research", dollars(1), now, unlimited("research"))
+	mustSettle(t, s, "settled-1", dollars(1), now)
+	mustReserve(t, s, "released-1", "research", dollars(1), now, unlimited("research"))
+	if err := s.Release(ctx, "released-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Reservations(ctx, []ledger.ReservationState{ledger.StatePending}, 0)
+	if err != nil {
+		t.Fatalf("Reservations: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "pending-1" {
+		t.Fatalf("pending survey = %v, want just pending-1", ids(got))
+	}
+	// Legs come back, because a reconciler cannot classify a hold without knowing
+	// which scopes it encumbers.
+	if len(got[0].Legs) == 0 {
+		t.Error("a surveyed reservation must carry its legs")
+	}
+
+	// Asking must not resolve anything.
+	if r, err := s.Get(ctx, "pending-1"); err != nil || r.State != ledger.StatePending {
+		t.Errorf("after the survey: state %q err %v, want pending: the survey is read-only", r.State, err)
+	}
+
+	// Several states at once, which is the real reconciliation query.
+	got, err = s.Reservations(ctx, []ledger.ReservationState{ledger.StatePending, ledger.StateExpired}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("pending+expired = %v, want just pending-1", ids(got))
+	}
+
+	// No filter means everything, so a survey can find damage in any state.
+	got, err = s.Reservations(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Errorf("unfiltered survey returned %d, want all 3", len(got))
+	}
+}
+
+// A reconciliation pass on a large ledger has to be bounded, and it should reach
+// the oldest damage first rather than this morning's traffic.
+func testReservationsAreBounded(t *testing.T, s ledger.Ledger) {
+	ctx := context.Background()
+	mustPut(t, s, monthly("research", "", dollars(1000)))
+	now := base.Add(time.Hour)
+
+	for i := range 5 {
+		id := fmt.Sprintf("r%d", i)
+		reserveAt(t, s, id, "research", dollars(1), now.Add(time.Duration(i)*time.Minute))
+	}
+
+	got, err := s.Reservations(ctx, []ledger.ReservationState{ledger.StatePending}, 2)
+	if err != nil {
+		t.Fatalf("Reservations: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("limit 2 returned %d", len(got))
+	}
+	if got[0].ID != "r0" || got[1].ID != "r1" {
+		t.Errorf("bounded survey = %v, want the two oldest", ids(got))
+	}
+}
+
+// reserveAt records a hold created at a specific time, so ordering is testable.
+func reserveAt(t *testing.T, s ledger.Ledger, id, budgetID string, amount money.Money, at time.Time) {
+	t.Helper()
+	mustReserve(t, s, id, budgetID, amount, at, unlimited(budgetID))
+}
+
+func ids(rs []ledger.Reservation) []string {
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		out[i] = r.ID
+	}
+	return out
 }

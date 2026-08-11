@@ -39,6 +39,12 @@ var (
 	// ErrReservationNotFound means no reservation has the given ID.
 	ErrReservationNotFound = errors.New("ledger: reservation not found")
 
+	// ErrChargeNotFound means the reservation exists but has not settled into a
+	// charge. It is distinct from ErrReservationNotFound: "this hold never became
+	// money" and "this hold never existed" lead a reconciler to opposite
+	// conclusions.
+	ErrChargeNotFound = errors.New("ledger: no charge for this reservation")
+
 	// ErrDuplicateReservation means the reservation ID is already in use. IDs are
 	// caller-supplied so that a retry after an ambiguous failure is idempotent
 	// rather than double-reserving.
@@ -426,6 +432,25 @@ type Ledger interface {
 
 	// Get returns a reservation by ID regardless of state, for reconciliation.
 	Get(ctx context.Context, reservationID string) (Reservation, error)
+
+	// ChargeFor returns the charge a reservation settled into, or
+	// ErrChargeNotFound if it never settled.
+	//
+	// This is the question a reconciler must be able to ask: after a crash between
+	// the ledger write and the telemetry write, the charge is the authoritative
+	// record of what happened, and the reservation ID is the only handle on it.
+	// Charges is scope-and-time-windowed and cannot answer it.
+	ChargeFor(ctx context.Context, reservationID string) (Charge, error)
+
+	// Reservations returns reservations in the given states, oldest first, limited
+	// to at most limit records when limit > 0.
+	//
+	// It is the ledger-side enumeration reconciliation needs, and it is read-only:
+	// RecoverExpired also finds lapsed holds but mutates them, which is the wrong
+	// tool for a survey. Empty states means every state.
+	//
+	// The limit is what keeps a reconciliation pass bounded on a large ledger.
+	Reservations(ctx context.Context, states []ReservationState, limit int) ([]Reservation, error)
 
 	// RecoverExpired marks holds whose leases have lapsed as expired and returns
 	// them, so a crashed process cannot strand budget headroom permanently.

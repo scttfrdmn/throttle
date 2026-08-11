@@ -19,11 +19,13 @@ import (
 	"text/tabwriter"
 	"time"
 
+	activitysqlite "throttle/activity/sqlite"
 	"throttle/budget"
 	"throttle/engine"
 	"throttle/ledger"
 	"throttle/ledger/sqlite"
 	"throttle/money"
+	"throttle/reconcile"
 )
 
 const version = "0.1.0-dev"
@@ -50,6 +52,8 @@ func main() {
 		err = advanceCmd(os.Args[2:])
 	case "recover":
 		err = recoverCmd(os.Args[2:])
+	case "reconcile":
+		err = reconcileCmd(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -73,6 +77,7 @@ commands:
   periods   list a budget's materialized periods
   advance   perform due period transitions
   recover   reclaim expired reservations left by crashed processes
+  reconcile repair bookkeeping a crashed process left half-finished
   version   print the version
 
 run "throttle <command> -h" for command flags`)
@@ -554,4 +559,123 @@ func recoverCmd(args []string) error {
 	}
 	fmt.Printf("\nreclaimed %d reservation(s) holding %s\n", len(recovered), total.CentsString())
 	return nil
+}
+
+// defaultActivityPath sits beside the ledger, because the two stores describe the
+// same requests and separating them by default would make reconciliation need
+// configuration to do anything.
+func defaultActivityPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "activity.db"
+	}
+	return filepath.Join(dir, "throttle", "activity.db")
+}
+
+// reconcileCmd repairs bookkeeping a crashed process left half-finished.
+//
+// It is explicit rather than scheduled. A daemon would have to decide on its own
+// when to touch money, and an operator running a repair pass at start-up or after
+// an incident is both sufficient and easier to reason about; -dry-run exists so
+// that decision can be made after seeing what would change.
+func reconcileCmd(args []string) error {
+	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	var (
+		requestID    = fs.String("request", "", "reconcile a single request id; empty sweeps for stranded bookkeeping")
+		activityPath = fs.String("activity", defaultActivityPath(), "path to the activity database")
+		dryRun       = fs.Bool("dry-run", false, "classify and report without writing anything")
+		limit        = fs.Int("limit", reconcile.DefaultLimit, "maximum records to examine per store")
+		verbose      = fs.Bool("v", false, "explain every record examined, not only the ones that changed")
+	)
+	dbPath := dbFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	_, store, err := open(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	acts, err := activitysqlite.Open(ctx, *activityPath)
+	if err != nil {
+		return fmt.Errorf("open activity database: %w", err)
+	}
+	defer acts.Close()
+
+	rec, err := reconcile.New(reconcile.Config{
+		Ledger:   store,
+		Activity: acts,
+		DryRun:   *dryRun,
+		Limit:    *limit,
+	})
+	if err != nil {
+		return err
+	}
+
+	if *dryRun {
+		fmt.Println("dry run: nothing will be written")
+	}
+
+	if *requestID != "" {
+		res, err := rec.Reconcile(ctx, *requestID)
+		if err != nil {
+			return err
+		}
+		printReconciled(res)
+		if res.Class == reconcile.ClassFailed {
+			return res.Err
+		}
+		return nil
+	}
+
+	sum, err := rec.ReconcilePending(ctx)
+	if err != nil {
+		return err
+	}
+	for _, res := range sum.Results {
+		// Consistent records are the boring majority, and printing them by default
+		// would bury the three lines an operator is looking for.
+		if res.Class == reconcile.ClassConsistent && !*verbose {
+			continue
+		}
+		printReconciled(res)
+	}
+	if len(sum.Results) > 0 {
+		fmt.Println()
+	}
+
+	// Every class is named. Folding unresolved records into a failure count would
+	// make a healthy system look broken, and folding them into the repaired count
+	// would claim money had been accounted for when it has not.
+	fmt.Printf("scanned %d / repaired %d / consistent %d / unresolved %d / awaiting data %d / orphaned %d / failed %d\n",
+		sum.Scanned, sum.Repaired, sum.Consistent, sum.Unresolved, sum.Awaiting, sum.Orphaned, sum.Failed)
+	if sum.Settled != 0 || sum.Released != 0 {
+		fmt.Printf("settled %s / released %s\n", sum.Settled.CentsString(), sum.Released.CentsString())
+	}
+	if sum.Unresolved > 0 || sum.Awaiting > 0 {
+		fmt.Println("\nunresolved and awaiting records are not errors: their cost is genuinely not known yet,\n" +
+			"and reconciliation will not invent one. They stay encumbered and remain settleable.")
+	}
+	if sum.Truncated {
+		fmt.Printf("\nthe scan stopped at its limit of %d; run again to continue\n", *limit)
+	}
+	if sum.Failed > 0 {
+		return fmt.Errorf("%d record(s) could not be reconciled", sum.Failed)
+	}
+	return nil
+}
+
+func printReconciled(res reconcile.Result) {
+	id := res.RequestID
+	if id == "" {
+		id = res.ReservationID
+	}
+	line := fmt.Sprintf("%-22s %-22s %s", id, res.Class, res.Detail)
+	if res.Money != reconcile.MoneyNone {
+		line = fmt.Sprintf("%-22s %-22s %s %s; %s", id, res.Class, res.Money, res.Amount.CentsString(), res.Detail)
+	}
+	fmt.Println(line)
 }

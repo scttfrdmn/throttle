@@ -740,6 +740,114 @@ func (s *Store) Charges(ctx context.Context, scope ledger.Scope, from, to time.T
 	return out, nil
 }
 
+// ChargeFor implements ledger.Ledger.
+//
+// It reads the charge itself rather than deriving settlement from the
+// reservation's state, because a reconciler repairing telemetry needs the
+// authoritative amount, timing, and usage -- not merely the knowledge that
+// something settled.
+func (s *Store) ChargeFor(ctx context.Context, reservationID string) (ledger.Charge, error) {
+	if reservationID == "" {
+		return ledger.Charge{}, fmt.Errorf("%w: reservation id is required", ledger.ErrInvalidArgument)
+	}
+
+	var (
+		c                                     ledger.Charge
+		id, estimated, reserved, actual       int64
+		occurredAt, latency                   int64
+		usageJSON, identityJSON, metadataJSON string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, reservation_id, budget_id, request_id, estimated_cost,
+		        reserved_cost, actual_cost, occurred_at, latency_ns,
+		        usage_json, identity, metadata
+		   FROM charges WHERE reservation_id = ?`, reservationID).
+		Scan(&id, &c.ReservationID, &c.BudgetID, &c.RequestID, &estimated,
+			&reserved, &actual, &occurredAt, &latency,
+			&usageJSON, &identityJSON, &metadataJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ledger.Charge{}, fmt.Errorf("%w: %q", ledger.ErrChargeNotFound, reservationID)
+	}
+	if err != nil {
+		return ledger.Charge{}, fmt.Errorf("sqlite: charge for %q: %w", reservationID, err)
+	}
+
+	c.ID = fmt.Sprintf("chg-%d", id)
+	c.EstimatedCost = money.Money(estimated)
+	c.ReservedCost = money.Money(reserved)
+	c.ActualCost = money.Money(actual)
+	c.OccurredAt = fromUnix(occurredAt)
+	c.Latency = time.Duration(latency)
+	_ = json.Unmarshal([]byte(usageJSON), &c.Usage)
+	_ = json.Unmarshal([]byte(identityJSON), &c.Identity)
+	_ = json.Unmarshal([]byte(metadataJSON), &c.Metadata)
+
+	legs, err := chargeLegs(ctx, s.db, id)
+	if err != nil {
+		return ledger.Charge{}, err
+	}
+	c.Legs = legs
+	return c, nil
+}
+
+// Reservations implements ledger.Ledger: a read-only, bounded survey.
+//
+// Oldest first, because the reservations most likely to be stranded are the ones
+// that have been outstanding longest, and a bounded pass should reach them before
+// it reaches this morning's traffic.
+func (s *Store) Reservations(ctx context.Context, states []ledger.ReservationState, limit int) ([]ledger.Reservation, error) {
+	var q strings.Builder
+	q.WriteString(reservationColumns)
+	args := make([]any, 0, len(states)+1)
+
+	if len(states) > 0 {
+		q.WriteString(" WHERE state IN (")
+		for i, st := range states {
+			if i > 0 {
+				q.WriteString(", ")
+			}
+			q.WriteString("?")
+			args = append(args, string(st))
+		}
+		q.WriteString(")")
+	}
+	q.WriteString(" ORDER BY created_at, id")
+	if limit > 0 {
+		q.WriteString(" LIMIT ?")
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: query reservations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ledger.Reservation
+	for rows.Next() {
+		r, err := scanReservation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Legs are a second read per reservation rather than a join, so a reservation
+	// with no legs is still returned: an orphan is exactly the kind of damage this
+	// enumeration exists to surface.
+	for i := range out {
+		legs, err := loadLegs(ctx, s.db, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Legs = legs
+	}
+	return out, nil
+}
+
 func chargeLegs(ctx context.Context, q querier, chargeID int64) ([]ledger.Leg, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT budget_id, period_id, depth, amount FROM charge_legs
