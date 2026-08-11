@@ -15,7 +15,7 @@ This project is intentionally being developed as a collaboration between Scott, 
 - primary implementation agent
 - owns repository coherence while coding
 - runs tests and validates changes
-- documents concrete implementation decisions and open questions
+- documents concrete implementation decisions and open questions as GitHub issues
 
 ### ChatGPT
 
@@ -45,4 +45,4 @@ When ChatGPT recommends changes, Claude Code should distinguish:
 - future-policy idea
 - optional preference
 
-Do not implement future-policy items simply because they are interesting; record them in the appropriate document and ask Scott when scope is ambiguous.
+Do not implement future-policy items simply because they are interesting; park them on the future-policy issue and ask Scott when scope is ambiguous.

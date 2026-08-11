@@ -44,7 +44,7 @@ The first release should focus on:
 - local dashboard for burn, bank/debt, range/forecast, model/provider/workload use, and live activity
 - monitor, allow, wait/queue, and deny enforcement
 
-See [`docs/v0.1-scope.md`](docs/v0.1-scope.md) for the boundary and [`docs/future-policy.md`](docs/future-policy.md) for deliberately deferred ideas.
+Scope for the first release is the [`v0.1.0` milestone](https://github.com/scttfrdmn/throttle/milestone/1). Deliberately deferred ideas are parked on the [future policy issue](https://github.com/scttfrdmn/throttle/issues/3).
 
 ## Status
 
