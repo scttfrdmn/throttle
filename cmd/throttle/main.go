@@ -30,8 +30,6 @@ import (
 	"github.com/scttfrdmn/throttle/reconcile"
 )
 
-const version = "0.1.0-dev"
-
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -40,7 +38,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "version":
-		fmt.Println(version)
+		fmt.Println(buildVersion())
 		return
 	case "init":
 		err = initCmd(os.Args[2:])
