@@ -180,19 +180,57 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(time.Hour)
 
-	if err := db.PingContext(ctx); err != nil {
+	// Retried while the file reports itself locked. Switching a fresh database into WAL mode
+	// takes an exclusive lock that SQLite does not run the busy handler for, so two
+	// processes opening a new activity store in the same instant would otherwise see one
+	// succeed and the other fail. Both steps are idempotent, so waiting is the whole fix.
+	if err := openRetry(ctx, func() error { return db.PingContext(ctx) }); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("activity/sqlite: ping %q: %w", path, err)
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if err := openRetry(ctx, func() error {
+		_, err := db.ExecContext(ctx, schema)
+		return err
+	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("activity/sqlite: migrate: %w", err)
 	}
-	if err := addColumns(ctx, db); err != nil {
+	if err := openRetry(ctx, func() error { return addColumns(ctx, db) }); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// openRetry retries fn while SQLite reports the database as locked. See the ledger store's
+// copy for why the one-time schema and journal-mode steps need it.
+func openRetry(ctx context.Context, fn func() error) error {
+	const (
+		attempts = 40
+		pause    = 50 * time.Millisecond
+	)
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = fn(); err == nil || !isLocked(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pause):
+		}
+	}
+	return err
+}
+
+// isLocked reports whether err is SQLite's busy/locked condition. The driver's error type is
+// unexported, so this reads the result code it names in the message.
+func isLocked(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") ||
+		strings.Contains(s, "SQLITE_LOCKED") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "database table is locked")
 }
 
 // addedColumns are columns introduced after the first release, added to an

@@ -90,15 +90,63 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(time.Hour)
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := openRetry(ctx, func() error { return db.PingContext(ctx) }); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: ping %q: %w", path, err)
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if err := openRetry(ctx, func() error {
+		_, err := db.ExecContext(ctx, schema)
+		return err
+	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: migrate: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// openRetry retries fn while SQLite reports the database as locked.
+//
+// busy_timeout covers ordinary contention, but not the two things that happen exactly once
+// per database: switching a fresh file into WAL mode and creating the schema. A journal-mode
+// change needs an exclusive lock and SQLite does not invoke the busy handler for it, so
+// several processes opening a new ledger at the same moment -- which is what a few machines
+// applying the same configuration on first run looks like -- would otherwise see one succeed
+// and the rest fail with SQLITE_BUSY.
+//
+// Retrying is safe because both operations are idempotent: the pragma is a no-op once WAL is
+// set, and the schema is CREATE TABLE IF NOT EXISTS throughout. Nothing about money is
+// retried here; this is opening a file.
+func openRetry(ctx context.Context, fn func() error) error {
+	const (
+		attempts = 40
+		pause    = 50 * time.Millisecond
+	)
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = fn(); err == nil || !isLocked(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pause):
+		}
+	}
+	return err
+}
+
+// isLocked reports whether err is SQLite's busy/locked condition.
+//
+// Matched on the message rather than on a driver error type: modernc.org/sqlite returns an
+// unexported error type, so there is nothing to assert against. The driver names the result
+// code in the message ("database is locked (5) (SQLITE_BUSY)"), which is what this reads.
+// Deliberately narrow -- a bare "(5)" would match unrelated messages.
+func isLocked(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") ||
+		strings.Contains(s, "SQLITE_LOCKED") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "database table is locked")
 }
 
 // Close releases the database handle.
