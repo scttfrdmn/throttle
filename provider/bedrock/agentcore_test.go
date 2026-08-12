@@ -578,6 +578,10 @@ func TestRuntimeCancellationRetainsTheHold(t *testing.T) {
 
 // 5b. A deadline is recorded as a timeout rather than a plain cancellation: same
 // status, different operational story.
+//
+// The deadline passes once the invocation is under way, for the reason expirableCtx
+// gives: a deadline armed beforehand has to outlast admission before it can expire in
+// the place this test is about, which on a loaded machine it does not.
 func TestRuntimeTimeoutRecordsTimeout(t *testing.T) {
 	acts, opt := withActivity(t, t.TempDir()+"/activity.db")
 	h := newRuntimeHarness(t, "1000", opt)
@@ -585,17 +589,15 @@ func TestRuntimeTimeoutRecordsTimeout(t *testing.T) {
 	body.stallAt = 0
 	h.runtime.bodies = []*fakeRuntimeBody{body}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	ctx := newExpirableCtx()
 	s, err := h.invokeRuntime(t, ctx, "req-1", dollars(t, "1.00"))
 	if err != nil {
 		t.Fatalf("InvokeAgentRuntime: %v", err)
 	}
 
-	go func() {
-		<-ctx.Done()
-		body.Close()
-	}()
+	// Let the deadline pass, then unblock the parked read so it observes the expiry.
+	ctx.expire()
+	go body.Close()
 	buf := make([]byte, 64)
 	for {
 		if _, err := s.Read(buf); err != nil {

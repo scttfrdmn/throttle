@@ -538,18 +538,22 @@ func TestAgentCancellationBeforeUsageRetainsTheHold(t *testing.T) {
 
 // A deadline is recorded as a timeout rather than a cancellation: the operational
 // story differs even though the accounting is identical.
+//
+// The deadline passes after the turn opens, for the reason expirableCtx gives: a
+// deadline on a timer has to outlast admission before it can expire mid-turn, and
+// under load it instead fails the call before there is a turn to time out.
 func TestAgentTimeoutRecordsTimeout(t *testing.T) {
 	acts, withActs := withActivity(t, t.TempDir()+"/activity.db")
 	h := newAgentHarness(t, "1000", withActs)
 	h.reader.hang()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	ctx := newExpirableCtx()
 
 	s, err := h.invoke(t, ctx, "agent-timeout", dollars(t, "1.00"))
 	if err != nil {
 		t.Fatalf("InvokeAgent: %v", err)
 	}
+	ctx.expire()
 	drainAgent(t, s)
 	if err := s.Close(); !errors.Is(err, bedrock.ErrOutcomeUnknown) {
 		t.Fatalf("Close error = %v, want ErrOutcomeUnknown", err)

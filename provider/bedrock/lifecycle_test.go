@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -346,6 +347,43 @@ func generousStall(c *bedrock.Config) { c.StreamStallTimeout = 30 * time.Second 
 // not. The tests wait for the renewal rather than for the clock, so a larger quantum
 // costs only the one renewal interval.
 const leaseQuantum = 600 * time.Millisecond
+
+// expirableCtx is a context whose deadline passes when a test says so, rather than when
+// a duration elapses.
+//
+// A test about what happens when a caller's deadline expires mid-call needs the deadline
+// to expire mid-call. A real timeout cannot promise that: the clock starts before the
+// request does, so the deadline has to outlast opening a database, reserving headroom,
+// and pricing the call before it can reach the moment under test, and on a loaded machine
+// it does not. The request then fails during admission -- correct behavior, since nothing
+// was reserved, but a different case with a different expected outcome, and the test
+// fails claiming the wrong thing.
+//
+// Err reports DeadlineExceeded rather than Canceled because that distinction is exactly
+// what the code under test reads: a timeout and a cancellation are recorded as different
+// outcomes, and a context.WithCancel would silently test the sibling case.
+type expirableCtx struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newExpirableCtx() *expirableCtx {
+	return &expirableCtx{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *expirableCtx) expire() { c.once.Do(func() { close(c.done) }) }
+
+func (c *expirableCtx) Done() <-chan struct{} { return c.done }
+
+func (c *expirableCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
 
 // awaitRenewal blocks until the hold behind a live request has been renewed at least
 // once.

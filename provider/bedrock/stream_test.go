@@ -312,14 +312,17 @@ func TestStreamContextCancellationTakesOneTerminalAction(t *testing.T) {
 
 // A deadline rather than a cancel is recorded as a timeout, because "the caller
 // gave up" and "the caller ran out of time" are different operational stories.
+//
+// The deadline passes after the stream opens, for the reason expirableCtx gives: a
+// deadline on a timer has to outlast admission before it can expire mid-stream, and
+// under load it instead fails the call before there is a stream to time out.
 func TestStreamTimeoutRecordsTimeout(t *testing.T) {
 	acts, withActs := withActivity(t, t.TempDir()+"/activity.db")
 	h := newStreamHarness(t, "1000", withActs)
 	// A stream that never sends anything and never ends: only the deadline can end it.
 	h.reader.hang()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	ctx := newExpirableCtx()
 
 	s, err := h.client.ConverseStream(ctx, bedrock.StreamRequest{
 		BudgetID: "team", RequestID: "stream-timeout", Input: streamRequest(sonnetID, aws.Int32(2000)),
@@ -327,6 +330,7 @@ func TestStreamTimeoutRecordsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConverseStream: %v", err)
 	}
+	ctx.expire()
 	drain(t, s)
 	_ = s.Close()
 

@@ -469,17 +469,32 @@ func TestConverseCancellationLeavesOutcomeUnknown(t *testing.T) {
 }
 
 // A caller deadline that expires mid-call is the same ambiguity as cancellation.
+//
+// The deadline is set once the call is in flight, for the reason the cancellation test
+// above gives: a deadline armed before Converse has to outlast opening a database,
+// reserving, and pricing before it can expire in the place this test is about, and on a
+// loaded machine it does not -- the request then fails at admission with a plain context
+// error, having reserved nothing, which is correct behavior and a different test.
+// Deadline rather than cancel, because the outcome recorded for the two differs.
 func TestConverseTimeoutLeavesOutcomeUnknown(t *testing.T) {
 	h := newHarness(t, "1000")
-	h.api.block = make(chan struct{})
+	h.api.block = make(chan struct{}) // never closed; the call hangs
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	ctx := newExpirableCtx()
 
-	_, err := h.client.Converse(ctx, bedrock.Request{
-		BudgetID: "team", RequestID: "req-1", Input: request(sonnetID, aws.Int32(2000)),
-	})
-	if !errors.Is(err, bedrock.ErrOutcomeUnknown) {
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.client.Converse(ctx, bedrock.Request{
+			BudgetID: "team", RequestID: "req-1", Input: request(sonnetID, aws.Int32(2000)),
+		})
+		done <- err
+	}()
+
+	// Once the provider call is genuinely in flight, the deadline passes.
+	waitFor(t, func() bool { return h.api.callCount() > 0 })
+	ctx.expire()
+
+	if err := <-done; !errors.Is(err, bedrock.ErrOutcomeUnknown) {
 		t.Fatalf("err = %v, want ErrOutcomeUnknown", err)
 	}
 }
