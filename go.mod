@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime v1.55.5
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.2
 	github.com/aws/smithy-go v1.27.7
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
 )
 

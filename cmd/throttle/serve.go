@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	activitysqlite "throttle/activity/sqlite"
+	"throttle/config"
 	"throttle/dashboard"
 	"throttle/report"
 )
@@ -25,15 +25,26 @@ import (
 // because the dashboard has no authentication and everything on it -- budget names,
 // allocations, spend, which models are being used and what they cost -- is exactly what
 // an operator would not want served to their network.
+//
+// The address may now come from a config file, and that changes nothing about the warning: a
+// non-loopback bind is exposed however it was requested, and a warning that only fired for
+// the flag would be a warning that stops firing the moment somebody makes the setting
+// permanent -- which is exactly when it matters most.
 func serveCmd(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	var (
-		listen       = fs.String("listen", dashboard.DefaultListen, "address to bind; loopback by default because the dashboard has no authentication")
-		activityPath = fs.String("activity", defaultActivityPath(), "path to the activity database; request history is omitted if it does not exist")
-		limit        = fs.Int("limit", 0, "rows in the recent-request table; zero uses the default")
+		listen = fs.String("listen", "", "address to bind; loopback by default because the dashboard has no authentication")
+		limit  = fs.Int("limit", 0, "rows in the recent-request table; zero uses the configured default")
 	)
-	dbPath := dbFlag(fs)
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := common.load(func(over *config.Overrides) {
+		setIfPassedName(fs, "listen", func() { over.Listen = listen })
+		setIfPassedName(fs, "limit", func() { over.ActivityLimit = limit })
+	})
+	if err != nil {
 		return err
 	}
 
@@ -43,7 +54,7 @@ func serveCmd(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	_, store, err := open(ctx, *dbPath)
+	_, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -53,21 +64,15 @@ func serveCmd(args []string) error {
 	// empty store as a side effect of looking at a budget, and the dashboard would then
 	// report "no requests recorded" -- which reads as a measurement -- instead of "no
 	// request history is available", which is the actual situation.
-	var acts report.Activity
-	switch _, statErr := os.Stat(*activityPath); {
-	case statErr == nil:
-		actStore, err := activitysqlite.Open(ctx, *activityPath)
-		if err != nil {
-			return fmt.Errorf("open activity database: %w", err)
-		}
-		defer actStore.Close()
-		acts = actStore
-	case errors.Is(statErr, os.ErrNotExist):
+	acts, closeActs, err := openActivityIfPresent(ctx, cfg.Activity)
+	if err != nil {
+		return err
+	}
+	defer closeActs()
+	if acts == nil {
 		fmt.Fprintf(os.Stderr, "throttle: no activity database at %s, so request history, "+
 			"breakdowns, and per-request detail will be unavailable.\n"+
-			"  Budget figures come from the ledger and are unaffected.\n", *activityPath)
-	default:
-		return fmt.Errorf("stat activity database: %w", statErr)
+			"  Budget figures come from the ledger and are unaffected.\n", cfg.Activity)
 	}
 
 	rep, err := report.New(report.Config{Ledger: store, Activity: acts})
@@ -78,23 +83,31 @@ func serveCmd(args []string) error {
 	srv, err := dashboard.New(dashboard.Config{
 		Reporter:      rep,
 		Version:       version,
-		ActivityLimit: *limit,
+		ActivityLimit: cfg.ActivityLimit,
 	})
 	if err != nil {
 		return err
 	}
 
+	// Warned on the resolved address, whatever set it, and before the socket exists rather
+	// than after: a warning that arrives once the port is already open is a warning about
+	// something that has already happened. The origin is named because a surprising bind is
+	// usually a config file somebody forgot about, and "it is in your config file" is not
+	// enough to find it.
+	if warning := dashboard.ExposureWarning(cfg.Listen); warning != "" {
+		fmt.Fprintln(os.Stderr, "throttle: "+warning)
+		if cfg.Path != "" && cfg.ListenFromFile() {
+			fmt.Fprintf(os.Stderr, "  This address came from dashboard.listen in %s.\n", cfg.Path)
+		}
+	}
+
 	// Bind before announcing. Printing a URL for a listener that failed to open sends the
 	// reader to a dead page and hides the real error underneath it.
-	ln, err := net.Listen("tcp", *listen)
+	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", *listen, err)
+		return fmt.Errorf("listen on %s: %w", cfg.Listen, err)
 	}
 	defer ln.Close()
-
-	if warning := dashboard.ExposureWarning(*listen); warning != "" {
-		fmt.Fprintln(os.Stderr, "throttle: "+warning)
-	}
 	fmt.Printf("throttle dashboard on http://%s/\n", displayAddr(ln.Addr()))
 	fmt.Println("read-only: no request served by this process moves money. Ctrl-C to stop.")
 

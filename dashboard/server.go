@@ -96,8 +96,12 @@ type Server struct {
 // ErrNoReporter reports a Server built without a read model.
 var ErrNoReporter = errors.New("dashboard: a reporter is required")
 
-// defaultActivityLimit is how many requests the table shows before saying it truncated.
-const defaultActivityLimit = 100
+// DefaultActivityLimit is how many requests the table shows before saying it truncated.
+//
+// Exported alongside DefaultListen so that config, which declares its own copies to avoid
+// depending on this package, can assert the two agree. A copied constant with no test is a
+// constant that drifts.
+const DefaultActivityLimit = 100
 
 // New builds a Server.
 func New(cfg Config) (*Server, error) {
@@ -110,7 +114,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	limit := cfg.ActivityLimit
 	if limit <= 0 {
-		limit = defaultActivityLimit
+		limit = DefaultActivityLimit
 	}
 	s := &Server{rep: cfg.Reporter, tpl: tpl, ver: cfg.Version, limit: limit}
 	s.routes()

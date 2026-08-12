@@ -1,35 +1,134 @@
-# Illustrative only: throttle does not read a config file yet. Budget definitions
-# are persisted in the ledger (see "throttle define"), because a definition
-# repeated per-process is exactly how two processes end up governing the same
-# money by different numbers. This file records the shape a loader would take.
+# throttle configuration.
+#
+# This file parses under the real loader and is covered by a test, so it is an example that
+# cannot go stale. Copy it, edit the amounts, and run "throttle config check".
+#
+# Default location:
+#   macOS  ~/Library/Application Support/throttle/throttle.yaml
+#   Linux  ~/.config/throttle/throttle.yaml
+#
+# Precedence, later wins:  built-in defaults < this file < environment < command flag
 
+version: 1
+
+# Where throttle keeps its two SQLite stores.
+#
+# Both default to the platform's user data directory -- ~/Library/Application Support/throttle
+# on macOS, ~/.local/share/throttle on Linux -- so most people should delete this section
+# rather than pin a path that differs per platform. It is here for development, CI, and
+# portable installs. THROTTLE_LEDGER and THROTTLE_ACTIVITY do the same thing per-process, and
+# "throttle config show" prints whichever won.
+#
+# The ledger is the accounting record: allocations, reservations, charges, closed periods.
+# The activity store is the request history the dashboard reads. They are separate because
+# one is money and the other is observation, and only the first has to be correct.
+store:
+  ledger: ~/throttle-demo/ledger.db
+  activity: ~/throttle-demo/activity.db
+
+defaults:
+  # Which budget commands use when none is named.
+  budget: research
+
+  # How a spending process reacts when a request does not fit:
+  #   monitor  record and allow -- measurement with no governance
+  #   enforce  refuse it
+  #   wait     block until the pacing curve affords it, then proceed
+  #
+  # This is a starting posture for a process, not a property of the budget: it is not
+  # persisted with a definition, because two processes may legitimately spend the same
+  # budget under different postures.
+  enforcement: enforce
+
+  # How long a reservation holds headroom before "throttle recover" may reclaim it. It
+  # bounds how much money a crashed process can strand, so it wants to be longer than a
+  # slow request and shorter than a coffee break.
+  lease: 15m
+
+dashboard:
+  # Loopback. The dashboard has no authentication, and everything on it -- budget names,
+  # allocations, spend, which models cost what -- is what you would not want served to your
+  # network. A non-loopback address here gets the same warning the -listen flag gets.
+  listen: 127.0.0.1:7654
+
+  # Rows in the recent-request table.
+  activity_limit: 100
+
+# Budgets, keyed by the id commands take. A child's spend also consumes its parent's
+# headroom, so the tree below means: $4,000 a month across everything, of which chat may use
+# at most $1,000 and agents at most $2,500.
+#
+# The children deliberately sum to less than the parent. Nothing requires that -- and
+# throttle will not redistribute anything for you -- but leaving the parent some slack is
+# what lets one child have a heavy week without starving the other.
 budgets:
-  - id: research
-    name: research-ai
-    allocation: 4000.00 # per period
-    recurrence: monthly
-    timezone: America/New_York # calendar boundaries fall in this zone
-    borrow: 72h # pull the pacing curve forward, not the total
+  research:
+    name: Research group
+    amount: $4,000
+
+    period:
+      # monthly is convenience syntax, not a special case: it compiles to the same period
+      # model as a fixed grant or a six-hour experiment window.
+      recur: monthly
+
+      # Where calendar boundaries fall. A month that ends at the wrong hour bills the wrong
+      # day, and DST is why this is a zone name and not an offset.
+      timezone: America/New_York
+
+      # The first day the budget applies. Required, and deliberately not defaulted to the
+      # current month: a definition's identity covers its anchor, so a file whose anchor
+      # came from the clock would describe a different budget every month.
+      #
+      # In the past on purpose. A monthly budget anchored ahead of today has not started, so
+      # it has no current period and "throttle status" has nothing to report -- which is a
+      # confusing first result from a file you just copied. A past anchor keeps generating
+      # periods indefinitely, so it never goes stale in the other direction.
+      anchor: 2026-01-01
+
+    # Let a period spend up to three days ahead of its own pacing curve. Without this, a
+    # budget paced evenly across a month refuses a legitimate Monday-morning batch that the
+    # month as a whole can easily afford.
+    borrow: 72h
+
+    # What happens to money a period did not spend:
+    #   none     it expires at the period boundary
+    #   credit   it carries forward as extra headroom
+    #   balance  it carries forward, and a deficit carries too
+    #
+    # The cap bounds a frugal month subsidising a reckless one. It is either a percentage of
+    # the allocation or an absolute amount -- never both, and a file that says both is
+    # rejected rather than resolved in some order nobody chose.
     rollover:
-      mode: credit # none | credit | balance
-      cap_percent: 25 # cap_percent and cap are mutually exclusive
-      # cap: 500.00
+      mode: credit
+      cap:
+        percent: 25
+        # amount: $1,000
 
-  # Sub-budgets are separate definitions joined by parent_id, not nested structs.
-  # A request against "agents" also consumes "research" in the same transaction.
-  - id: chat
+  chat:
+    name: Interactive chat
     parent: research
-    allocation: 1000.00
-  - id: agents
-    parent: research
-    allocation: 2500.00
-  - id: experiments
-    parent: research
-    allocation: 500.00
+    amount: $1,000
+    # No period here: a child inherits its parent's calendar, which is what makes the two
+    # sets of numbers comparable. Give it recur/anchor/timezone to override that.
 
-# Enforcement posture is deliberately absent above: it is a property of the
-# process doing the spending, not an accounting fact about the budget, so it is
-# not persisted with the definition. A process picks monitor | wait | enforce.
-# Within a chain the strictest posture wins.
+  agents:
+    name: Agent runs
+    parent: research
+    amount: $2,500
+    borrow: 24h
 
-# Provider adapters and pricing sources are configured separately.
+  # A fixed grant rather than a recurring budget: one envelope, a hard end date, and no
+  # rollover because there is no next period to roll into. Same model as the above -- only
+  # the period rule differs. Note that no month appears anywhere in it: "monthly" above is
+  # syntax, not the abstraction.
+  #
+  # The end date includes the day named: a grant "through 2027-12-31" runs to the end of
+  # that day, not to midnight at its start.
+  award:
+    name: NSF award compute
+    amount: $125,000
+    period:
+      recur: none
+      timezone: America/New_York
+      anchor: 2026-01-01
+      end: 2027-12-31

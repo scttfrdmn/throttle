@@ -48,6 +48,19 @@ type RolloverPolicy struct {
 	CapBasisPoints int64
 }
 
+// Normalized is the mode's canonical spelling.
+//
+// The zero value means the same thing as RolloverNone: no carry. Both spellings
+// are accepted everywhere a mode is read, so anything that compares modes rather
+// than acting on them -- a fingerprint, a display string, a stored column --
+// normalizes first, or two identical policies compare unequal.
+func (m RolloverMode) Normalized() RolloverMode {
+	if m == "" {
+		return RolloverNone
+	}
+	return m
+}
+
 // Capped reports whether any positive-carry cap is configured.
 func (p RolloverPolicy) Capped() bool { return p.Cap > 0 || p.CapBasisPoints > 0 }
 

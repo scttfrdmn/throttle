@@ -64,32 +64,109 @@ Working today:
 - `activity`, `activity/sqlite` — durable, content-free per-request records: usage, cost and its completeness, the captured quote, the compound detail of an agent turn, the reconciliation linkage of a hosted runtime invocation, and the enforcement posture that actually governed the call
 - `provider/bedrock` — governed `Converse`, `ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime`: preflight estimation, response reconciliation, durable activity, and explicit behavior for cancellation, provider errors, unpriceable costs, and ambiguous outcomes
 - `reconcile` — repairs bookkeeping a crashed process left half-finished, from durable state alone: it completes a stalled transition when the two stores already hold enough authoritative information to complete it truthfully, prices a replayed settlement with the quote captured at admission rather than any current catalog, and leaves a genuinely unknown cost explicitly unknown instead of tidying it into a zero
-- `cmd/throttle` — define and inspect budgets, and repair stranded bookkeeping
+- `dashboard` — a local, read-only view of burn, bank and debt, pacing, model and provider breakdowns, and live activity; loopback by default, because it has no authentication
+- `config` — one configuration model shared by every command, with a documented precedence and a `config check` that validates without touching the ledger
+- `cmd/throttle` — define and inspect budgets, run the dashboard, and repair stranded bookkeeping
 
-Not yet: the local dashboard, providers other than Bedrock, and the worker that
-ingests delayed AgentCore runtime-resource usage — the data model and the join keys
-for it exist, the ingestion does not. Pricing ships as a versioned fixture catalog
-rather than a live AWS Price List sync.
+Not yet: providers other than Bedrock, and the worker that ingests delayed AgentCore
+runtime-resource usage — the data model and the join keys for it exist, the ingestion
+does not. Pricing ships as a versioned fixture catalog rather than a live AWS Price
+List sync.
+
+## Getting started
+
+```bash
+go build -o throttle ./cmd/throttle
+```
+
+`throttle init` writes a starter configuration file and nothing else — no databases, no
+credentials, no cloud resources:
+
+```bash
+./throttle init    # writes the config file, prints where, and says what to do next
+```
+
+The default location follows the platform's own conventions:
+
+| | config file | ledger and activity stores |
+|---|---|---|
+| macOS | `~/Library/Application Support/throttle/throttle.yaml` | `~/Library/Application Support/throttle/` |
+| Linux | `~/.config/throttle/throttle.yaml` | `~/.local/share/throttle/` |
+
+Linux honours `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Nothing is written to the current
+directory, and `-config`, `-db`, `-activity`, `THROTTLE_CONFIG`, `THROTTLE_LEDGER`, and
+`THROTTLE_ACTIVITY` override the defaults for development, CI, and portable installs.
+
+The file is the same budget model the engine uses — `monthly` is convenience syntax that
+compiles to the same period rule as a two-year grant. [`examples/throttle.yaml`](examples/throttle.yaml)
+is the fuller annotated version, and it parses under the real loader:
+
+```yaml
+version: 1
+
+defaults:
+  budget: research
+
+budgets:
+  research:
+    amount: $4,000
+    period:
+      recur: monthly
+      timezone: America/New_York
+      anchor: 2026-01-01   # the first day it applies; required, never taken from the clock
+    borrow: 72h            # may spend up to three days ahead of its own pacing curve
+    rollover:
+      mode: credit         # unspent money carries forward...
+      cap:
+        percent: 25        # ...up to a quarter of the allocation
+
+  chat:                    # a child's spend also consumes its parent's headroom
+    parent: research
+    amount: $1,000
+```
+
+Then check it, store it, and watch it:
+
+```bash
+./throttle config check    # parse, validate, resolve, and compare to the ledger. Writes nothing.
+./throttle config show     # what is in effect, and where each value came from
+./throttle define -id research   # store the definition from the file
+./throttle status                # uses defaults.budget when no -id is given
+./throttle serve                 # the dashboard, on 127.0.0.1:7654
+```
+
+`config check` is read-only and exits nonzero on a problem, so it works as a CI step. It
+reports a file that disagrees with a stored budget rather than rewriting one: a stored
+definition governs money that has already been spent against it.
+
+Anything a flag can say, the file can say too, and the precedence is fixed — later wins,
+nothing merged:
+
+```text
+built-in defaults  <  config file  <  environment  <  command flag
+```
+
+A one-off budget needs no file at all:
+
+```bash
+# Define a budget once; it is persisted and shared by every process on the ledger.
+./throttle define -id research -budget '$400' -borrow 72h -rollover credit
+
+# Sub-budgets are real entities, and a child's spend consumes its ancestors too.
+./throttle define -id agents -parent research -budget '$150'
+
+# Is a $2.50 request admissible right now, and if not, which budget said no?
+./throttle status -id agents -chain -estimate 2.50
+
+# After a crash: what bookkeeping is half-finished, and what would repairing it do?
+./throttle reconcile -dry-run
+```
+
+For the test suite and the demo:
 
 ```bash
 make check
 make demo
-```
-
-Example:
-
-```bash
-# Define a budget once; it is persisted and shared by every process on the ledger.
-go run ./cmd/throttle define -id research -budget 400 -borrow 72h -rollover credit
-
-# Sub-budgets are real entities, and a child's spend consumes its ancestors too.
-go run ./cmd/throttle define -id agents -parent research -budget 150
-
-# Is a $2.50 request admissible right now, and if not, which budget said no?
-go run ./cmd/throttle status -id agents -chain -estimate 2.50
-
-# After a crash: what bookkeeping is half-finished, and what would repairing it do?
-go run ./cmd/throttle reconcile -dry-run
 ```
 
 A crash between the ledger write and the activity write leaves the two stores

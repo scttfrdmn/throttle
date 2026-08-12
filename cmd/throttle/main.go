@@ -5,6 +5,10 @@
 // rather than a set of flags repeated on every invocation: repeating the rules on
 // each call is exactly how two processes end up governing the same money by
 // different numbers.
+//
+// Where things live, what the stores are called, and which budget is the default come from
+// one configuration model shared by every command below. See package config: flags override
+// the file, the file overrides the defaults, and nothing is merged.
 package main
 
 import (
@@ -12,15 +16,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"math"
 	"os"
-	"path/filepath"
-	"strings"
 	"text/tabwriter"
 	"time"
 
 	activitysqlite "throttle/activity/sqlite"
 	"throttle/budget"
+	"throttle/config"
 	"throttle/engine"
 	"throttle/ledger"
 	"throttle/ledger/sqlite"
@@ -40,6 +42,10 @@ func main() {
 	case "version":
 		fmt.Println(version)
 		return
+	case "init":
+		err = initCmd(os.Args[2:])
+	case "config":
+		err = configCmd(os.Args[2:])
 	case "define":
 		err = defineCmd(os.Args[2:])
 	case "budgets":
@@ -69,144 +75,117 @@ func main() {
 	}
 }
 
+// usage is grouped by what a person is trying to do, not alphabetically.
+//
+// Getting started first, because that is the order a new user meets them in; then the
+// day-to-day reading commands; then the repair commands, which exist for when something has
+// gone wrong and are not part of normal operation.
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: throttle <command> [flags]
 
-commands:
-  define    create or verify a persistent budget definition
-  budgets   list stored budget definitions
-  status    show the current budget position
-  periods   list a budget's materialized periods
-  advance   perform due period transitions
-  recover   reclaim expired reservations left by crashed processes
-  reconcile repair bookkeeping a crashed process left half-finished
-  serve     run the local read-only dashboard on 127.0.0.1
-  version   print the version
+getting started
+  init       write a starter configuration file
+  config     validate the configuration (check) or print what is in effect (show)
+  define     store a budget: an amount, a period, and optionally a parent
 
-run "throttle <command> -h" for command flags`)
+watching the money
+  status     where a budget stands: spent, reserved, banked or borrowed
+  budgets    list the stored budgets
+  periods    list a budget's periods
+  serve      run the local read-only dashboard on 127.0.0.1
+
+keeping the books straight
+  advance    close periods that have ended and open the ones that follow
+  recover    reclaim headroom held by reservations from crashed processes
+  reconcile  repair bookkeeping a crashed process left half-finished
+
+  version    print the version
+
+Shared flags: -config, -db, -activity. Anything a flag can say, the configuration file can
+say too; the flag wins for one command. Run "throttle <command> -h" for the rest.`)
 }
 
-func defaultDBPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "throttle.db"
-	}
-	return filepath.Join(dir, "throttle", "ledger.db")
-}
-
-// dbFlag is on every command, because every command needs the ledger.
-func dbFlag(fs *flag.FlagSet) *string {
-	return fs.String("db", defaultDBPath(), "path to the ledger database")
-}
-
-// open opens the ledger and an engine over it. The caller closes the store.
-func open(ctx context.Context, path string) (*engine.Engine, *sqlite.Store, error) {
-	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, nil, fmt.Errorf("create ledger directory: %w", err)
-		}
-	}
-	store, err := sqlite.Open(ctx, path)
-	if err != nil {
-		return nil, nil, err
-	}
-	eng, err := engine.New(engine.Config{Ledger: store})
-	if err != nil {
-		store.Close()
-		return nil, nil, err
-	}
-	return eng, store, nil
-}
-
+// defineCmd stores a budget definition.
+//
+// Two ways to reach it. With -id and no other budget flags, the definition comes from the
+// configuration file, which is the path most people should use: the file is reviewable,
+// diffable, and says the same thing every time it is read. The flags remain for a one-off
+// budget and for scripting something the file does not describe.
+//
+// Both paths end at the same budget.Definition and the same money parser. A second way to
+// express a budget would be a second place for the two to disagree.
 func defineCmd(args []string) error {
 	fs := flag.NewFlagSet("define", flag.ContinueOnError)
 	var (
 		id       = fs.String("id", "", "budget id (required)")
 		parent   = fs.String("parent", "", "parent budget id; empty means a root budget")
 		name     = fs.String("name", "", "display name")
-		alloc    = fs.String("budget", "", "allocation per period in dollars (required)")
-		borrow   = fs.Duration("borrow", 0, "borrow window, e.g. 72h")
-		recur    = fs.String("recur", "monthly", "recurrence: monthly, weekly, daily, duration, or none")
-		every    = fs.Duration("every", 0, "period length when -recur=duration")
-		anchor   = fs.String("anchor", "", "RFC3339 start of the first period; defaults to the start of the current month")
-		endAt    = fs.String("end", "", "RFC3339 end of the whole budget; required when -recur=none")
-		tz       = fs.String("tz", "UTC", "timezone in which calendar period boundaries fall")
-		rollover = fs.String("rollover", "none", "rollover mode: none, credit, or balance")
-		capAmt   = fs.String("rollover-cap", "", "cap positive carry at this many dollars")
-		capPct   = fs.Float64("rollover-cap-pct", 0, "cap positive carry at this percentage of the allocation")
-		dbPath   = dbFlag(fs)
+		alloc    = fs.String("budget", "", "allocation per period, e.g. '$4,000'; taken from the config file if unset")
+		borrow   = fs.String("borrow", "", "borrow window, e.g. 72h or 3d")
+		recur    = fs.String("recur", "", "period: monthly, weekly, daily, duration, or none")
+		every    = fs.String("every", "", "period length when -recur=duration, e.g. 6h")
+		anchor   = fs.String("anchor", "", "first day the budget applies, e.g. 2026-09-01")
+		endAt    = fs.String("end", "", "last day of the budget; required when -recur=none")
+		tz       = fs.String("tz", "", "timezone in which calendar period boundaries fall")
+		rollover = fs.String("rollover", "", "rollover mode: none, credit, or balance")
+		capAmt   = fs.String("rollover-cap", "", "cap positive carry at this amount, e.g. '$1,000'")
+		capPct   = fs.String("rollover-cap-pct", "", "cap positive carry at this percentage of the allocation")
 	)
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *id == "" {
 		return errors.New("define: -id is required")
 	}
-	if *alloc == "" {
-		return errors.New("define: -budget is required")
-	}
 
-	allocation, err := money.Parse(*alloc)
+	cfg, err := common.load()
 	if err != nil {
-		return fmt.Errorf("parse -budget: %w", err)
-	}
-	loc, err := time.LoadLocation(*tz)
-	if err != nil {
-		return fmt.Errorf("parse -tz: %w", err)
-	}
-
-	// The two cap forms are mutually exclusive by design: a cap is either an
-	// amount or a proportion, and accepting both would leave the resolution order
-	// as an implicit product rule.
-	if *capAmt != "" && *capPct != 0 {
-		return errors.New("define: -rollover-cap and -rollover-cap-pct are mutually exclusive")
-	}
-	policy := budget.RolloverPolicy{Mode: budget.RolloverMode(*rollover)}
-	if *capAmt != "" {
-		if policy.Cap, err = money.Parse(*capAmt); err != nil {
-			return fmt.Errorf("parse -rollover-cap: %w", err)
-		}
-	}
-	if *capPct != 0 {
-		bp, err := basisPoints(*capPct)
-		if err != nil {
-			return err
-		}
-		policy.CapBasisPoints = bp
-	}
-
-	anchorAt := monthStart(time.Now().UTC(), loc)
-	if *anchor != "" {
-		if anchorAt, err = time.Parse(time.RFC3339, *anchor); err != nil {
-			return fmt.Errorf("parse -anchor: %w", err)
-		}
-	}
-	var end time.Time
-	if *endAt != "" {
-		if end, err = time.Parse(time.RFC3339, *endAt); err != nil {
-			return fmt.Errorf("parse -end: %w", err)
-		}
-	}
-
-	def := budget.Definition{
-		ID:         *id,
-		ParentID:   *parent,
-		Name:       *name,
-		Allocation: allocation,
-		Borrow:     *borrow,
-		Rollover:   policy,
-		Recurrence: budget.Recurrence(*recur),
-		Every:      *every,
-		Location:   loc,
-		AnchorAt:   anchorAt,
-		EndAt:      end,
-	}
-	if err := def.Validate(); err != nil {
 		return err
 	}
 
+	// The config file supplies the definition unless a flag overrides a field. A -budget
+	// with no file behind it is still the whole definition; a -budget alongside a file is an
+	// override of one field of it.
+	def, fromFile := cfg.Definition(*id)
+	if fromFile {
+		def.ID = *id
+	} else {
+		def = budget.Definition{ID: *id}
+	}
+
+	over := config.DefinitionOverrides{}
+	for _, f := range []struct {
+		name  string
+		apply func()
+	}{
+		{"parent", func() { over.Parent = parent }},
+		{"name", func() { over.Name = name }},
+		{"budget", func() { over.Amount = alloc }},
+		{"borrow", func() { over.Borrow = borrow }},
+		{"recur", func() { over.Recur = recur }},
+		{"every", func() { over.Every = every }},
+		{"anchor", func() { over.Anchor = anchor }},
+		{"end", func() { over.End = endAt }},
+		{"tz", func() { over.Timezone = tz }},
+		{"rollover", func() { over.Rollover = rollover }},
+		{"rollover-cap", func() { over.CapAmount = capAmt }},
+		{"rollover-cap-pct", func() { over.CapPercent = capPct }},
+	} {
+		setIfPassedName(fs, f.name, f.apply)
+	}
+
+	def, err = config.ApplyDefinitionOverrides(def, over)
+	if err != nil {
+		return err
+	}
+	if !fromFile && def.Allocation == 0 && over.Amount == nil {
+		return fmt.Errorf("define: %q is not in the configuration file, so -budget is required "+
+			"(an amount per period, e.g. -budget '$4,000')", *id)
+	}
+
 	ctx := context.Background()
-	eng, store, err := open(ctx, *dbPath)
+	eng, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -225,57 +204,72 @@ func defineCmd(args []string) error {
 		return err
 	}
 
-	// Status materializes the current period, so the definition is immediately
-	// usable and its bounds are visible.
+	source := "from flags"
+	if fromFile {
+		source = "from " + cfg.Path
+	}
+	summary := fmt.Sprintf("budget %q defined (%s): %s %s",
+		def.ID, source, def.Allocation.CentsString(), config.DescribePeriod(def))
+
+	// Status materializes the current period, so the definition is immediately usable and its
+	// bounds are visible.
+	//
+	// A budget whose term has not started yet -- a grant beginning next month, which is a
+	// perfectly ordinary thing to define in advance -- has no current period, and that is not
+	// a failure. The definition is stored either way, so reporting an error here would say the
+	// command failed about a command that succeeded.
 	st, err := eng.Status(ctx, def.ID)
-	if err != nil {
+	switch {
+	case errors.Is(err, budget.ErrNoSuchPeriod):
+		fmt.Println(summary + ", " + termText(def))
+		return nil
+	case err != nil:
 		return err
 	}
-	fmt.Printf("budget %q defined: %s per %s, period %s → %s\n",
-		def.ID, allocation.CentsString(), describeRecurrence(def),
-		st.Period.Envelope.Start.Format(time.RFC3339), st.Period.Envelope.End.Format(time.RFC3339))
+	fmt.Printf("%s, current period %s → %s\n", summary,
+		st.Period.Envelope.Start.Format(time.RFC3339),
+		st.Period.Envelope.End.Format(time.RFC3339))
 	return nil
 }
 
-// basisPoints converts a user-facing percentage to the integer basis points the
-// definition stores, refusing anything that is not exactly representable rather
-// than silently rounding a cap the user typed.
-func basisPoints(pct float64) (int64, error) {
-	if pct < 0 {
-		return 0, errors.New("define: -rollover-cap-pct cannot be negative")
-	}
-	scaled := pct * 100
-	if math.Abs(scaled-math.Round(scaled)) > 1e-9 {
-		return 0, fmt.Errorf("define: -rollover-cap-pct %g is finer than one basis point", pct)
-	}
-	return int64(math.Round(scaled)), nil
-}
-
-func monthStart(now time.Time, loc *time.Location) time.Time {
-	local := now.In(loc)
-	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc)
-}
-
-func describeRecurrence(def budget.Definition) string {
-	switch def.Recurrence {
-	case budget.RecurDuration:
-		return def.Every.String()
-	case budget.RecurNone:
-		return "fixed term"
+// termText says why a budget has no current period, in dates rather than in the engine's
+// vocabulary: "no such period" is true and tells the reader nothing they can act on.
+func termText(def budget.Definition) string {
+	switch {
+	case !def.AnchorAt.IsZero() && time.Now().Before(def.AnchorAt):
+		return "not started yet: it begins " + def.AnchorAt.In(def.Location).Format("2006-01-02 15:04 MST")
+	case !def.EndAt.IsZero() && !time.Now().Before(def.EndAt):
+		return "its term ended " + def.EndAt.In(def.Location).Format("2006-01-02 15:04 MST")
 	default:
-		return strings.TrimSuffix(string(def.Recurrence), "ly")
+		return "it has no period covering now"
 	}
+}
+
+// setIfPassedName runs apply only if the command line actually set the named flag.
+//
+// The distinction matters because these flags override a config file: a flag whose default
+// were treated as a value would silently outrank the file on every invocation.
+func setIfPassedName(fs *flag.FlagSet, name string, apply func()) {
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			apply()
+		}
+	})
 }
 
 func budgetsCmd(args []string) error {
 	fs := flag.NewFlagSet("budgets", flag.ContinueOnError)
-	dbPath := dbFlag(fs)
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := common.load()
+	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	_, store, err := open(ctx, *dbPath)
+	_, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -286,56 +280,64 @@ func budgetsCmd(args []string) error {
 		return err
 	}
 	if len(defs) == 0 {
-		fmt.Println(`no budgets defined (see "throttle define -h")`)
+		// The next step depends on whether there is a file to store from, so the message
+		// names the one that applies rather than both.
+		if len(cfg.Budgets) > 0 {
+			fmt.Printf("no budgets stored yet; %s defines %d (store one with \"throttle define -id <name>\")\n",
+				cfg.Path, len(cfg.Budgets))
+			return nil
+		}
+		fmt.Println(`no budgets stored yet (see "throttle init" or "throttle define -h")`)
 		return nil
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tPARENT\tALLOCATION\tRECURRENCE\tROLLOVER\tBORROW")
+	fmt.Fprintln(w, "ID\tPARENT\tALLOCATION\tPERIOD\tROLLOVER\tBORROW")
 	for _, def := range defs {
 		parent := def.ParentID
 		if parent == "" {
 			parent = "-"
 		}
+		borrow := "-"
+		if def.Borrow > 0 {
+			borrow = def.Borrow.String()
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			def.ID, parent, def.Allocation.CentsString(),
-			describeRecurrence(def), describeRollover(def.Rollover), def.Borrow)
+			config.DescribePeriod(def), describeRollover(def.Rollover), borrow)
 	}
 	return w.Flush()
 }
 
+// describeRollover renders a carry policy. One implementation, in config, so that a cap
+// printed by "budgets" and the same cap printed by "config show" cannot disagree -- and so
+// the percentage goes through the integer formatter rather than a float.
 func describeRollover(p budget.RolloverPolicy) string {
-	mode := string(p.Mode)
-	if mode == "" {
-		mode = string(budget.RolloverNone)
-	}
-	switch {
-	case p.Cap > 0:
-		return mode + " ≤" + p.Cap.CentsString()
-	case p.CapBasisPoints > 0:
-		return fmt.Sprintf("%s ≤%g%%", mode, float64(p.CapBasisPoints)/100)
-	default:
-		return mode
-	}
+	return config.DescribeRollover(p)
 }
 
 func statusCmd(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	var (
-		id           = fs.String("id", "", "budget id (required)")
+		id           = fs.String("id", "", "budget id; the configured default budget if unset")
 		estimateText = fs.String("estimate", "", "also report the admission decision for this estimated cost")
 		chain        = fs.Bool("chain", false, "also report every ancestor budget")
-		dbPath       = dbFlag(fs)
 	)
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *id == "" {
-		return errors.New("status: -id is required")
+	cfg, err := common.load()
+	if err != nil {
+		return err
+	}
+	budgetID, err := requireBudget(*id, cfg, "status")
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
-	eng, store, err := open(ctx, *dbPath)
+	eng, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -343,13 +345,13 @@ func statusCmd(args []string) error {
 
 	statuses := []engine.Status{}
 	if *chain {
-		if statuses, err = eng.StatusChain(ctx, *id); err != nil {
-			return err
+		if statuses, err = eng.StatusChain(ctx, budgetID); err != nil {
+			return outsideTerm(ctx, store, budgetID, err)
 		}
 	} else {
-		st, err := eng.Status(ctx, *id)
+		st, err := eng.Status(ctx, budgetID)
 		if err != nil {
-			return err
+			return outsideTerm(ctx, store, budgetID, err)
 		}
 		statuses = append(statuses, st)
 	}
@@ -368,14 +370,14 @@ func statusCmd(args []string) error {
 			w.Flush()
 			return err
 		}
-		dec, err := eng.Check(ctx, *id, est)
+		dec, err := eng.Check(ctx, budgetID, est)
 		if err != nil {
 			w.Flush()
 			return err
 		}
 		fmt.Fprintf(w, "\nestimate\t%s\n", est.CentsString())
 		fmt.Fprintf(w, "decision\t%s\n", dec.Outcome)
-		if dec.BindingBudgetID != "" && dec.BindingBudgetID != *id {
+		if dec.BindingBudgetID != "" && dec.BindingBudgetID != budgetID {
 			fmt.Fprintf(w, "limited by\t%s\n", dec.BindingBudgetID)
 		}
 		if dec.Reason != "" {
@@ -388,6 +390,24 @@ func statusCmd(args []string) error {
 		}
 	}
 	return w.Flush()
+}
+
+// outsideTerm rewrites "no such period" into a sentence about the budget's dates.
+//
+// A budget defined in advance of its start date, or one whose grant has expired, has no
+// current period. That is a fact about the calendar, not a fault, and the engine's own
+// message -- "no such period: <timestamp> precedes the anchor <timestamp>" -- is accurate
+// and useless to somebody trying to work out what to do. Any other error is passed
+// through untouched.
+func outsideTerm(ctx context.Context, store *sqlite.Store, budgetID string, err error) error {
+	if !errors.Is(err, budget.ErrNoSuchPeriod) {
+		return err
+	}
+	def, _, defErr := store.Definition(ctx, budgetID)
+	if defErr != nil {
+		return err
+	}
+	return fmt.Errorf("budget %q is %s, so it has no current position to report", budgetID, termText(def))
 }
 
 func printStatus(w *tabwriter.Writer, st engine.Status) {
@@ -437,27 +457,40 @@ func printStatus(w *tabwriter.Writer, st engine.Status) {
 
 func periodsCmd(args []string) error {
 	fs := flag.NewFlagSet("periods", flag.ContinueOnError)
-	id := fs.String("id", "", "budget id (required)")
-	dbPath := dbFlag(fs)
+	id := fs.String("id", "", "budget id; the configured default budget if unset")
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *id == "" {
-		return errors.New("periods: -id is required")
+	cfg, err := common.load()
+	if err != nil {
+		return err
+	}
+	budgetID, err := requireBudget(*id, cfg, "periods")
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
-	_, store, err := open(ctx, *dbPath)
+	_, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	periods, err := store.Periods(ctx, *id)
+	periods, err := store.Periods(ctx, budgetID)
 	if err != nil {
 		return err
 	}
 	if len(periods) == 0 {
+		// A period is materialized when something first asks where a budget stands, so an
+		// empty listing is normal. It is worth saying why when the reason is the calendar
+		// rather than mere inactivity.
+		if def, _, err := store.Definition(ctx, budgetID); err == nil && !def.AnchorAt.IsZero() &&
+			time.Now().Before(def.AnchorAt) {
+			fmt.Printf("no periods yet: %q is %s\n", budgetID, termText(def))
+			return nil
+		}
 		fmt.Println("no periods materialized yet")
 		return nil
 	}
@@ -486,14 +519,22 @@ func periodsCmd(args []string) error {
 
 func advanceCmd(args []string) error {
 	fs := flag.NewFlagSet("advance", flag.ContinueOnError)
+	// Deliberately not defaulted to the configured budget: empty already means every
+	// budget, which is the safe reading for a command that closes periods. Narrowing it
+	// to one budget because a file named a default would silently leave the others
+	// unadvanced.
 	id := fs.String("id", "", "budget id; empty advances every budget")
-	dbPath := dbFlag(fs)
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := common.load()
+	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	eng, store, err := open(ctx, *dbPath)
+	eng, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -525,14 +566,19 @@ func advanceCmd(args []string) error {
 
 func recoverCmd(args []string) error {
 	fs := flag.NewFlagSet("recover", flag.ContinueOnError)
+	// As with advance: empty means every budget, and that stays the default.
 	id := fs.String("id", "", "budget id; empty recovers across every budget")
-	dbPath := dbFlag(fs)
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := common.load()
+	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	eng, store, err := open(ctx, *dbPath)
+	eng, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -564,47 +610,51 @@ func recoverCmd(args []string) error {
 	return nil
 }
 
-// defaultActivityPath sits beside the ledger, because the two stores describe the
-// same requests and separating them by default would make reconciliation need
-// configuration to do anything.
-func defaultActivityPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "activity.db"
-	}
-	return filepath.Join(dir, "throttle", "activity.db")
-}
-
 // reconcileCmd repairs bookkeeping a crashed process left half-finished.
 //
-// It is explicit rather than scheduled. A daemon would have to decide on its own
-// when to touch money, and an operator running a repair pass at start-up or after
-// an incident is both sufficient and easier to reason about; -dry-run exists so
-// that decision can be made after seeing what would change.
+// It is explicit rather than scheduled, and knowing where the stores are does not change
+// that. Configuration tells reconcile which databases to open; it does not tell it to run.
+// A daemon would have to decide on its own when to touch money, and an operator running a
+// repair pass at start-up or after an incident is both sufficient and easier to reason
+// about; -dry-run exists so that decision can be made after seeing what would change.
 func reconcileCmd(args []string) error {
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 	var (
-		requestID    = fs.String("request", "", "reconcile a single request id; empty sweeps for stranded bookkeeping")
-		activityPath = fs.String("activity", defaultActivityPath(), "path to the activity database")
-		dryRun       = fs.Bool("dry-run", false, "classify and report without writing anything")
-		limit        = fs.Int("limit", reconcile.DefaultLimit, "maximum records to examine per store")
-		verbose      = fs.Bool("v", false, "explain every record examined, not only the ones that changed")
+		requestID = fs.String("request", "", "reconcile a single request id; empty sweeps for stranded bookkeeping")
+		dryRun    = fs.Bool("dry-run", false, "classify and report without writing anything")
+		limit     = fs.Int("limit", reconcile.DefaultLimit, "maximum records to examine per store")
+		verbose   = fs.Bool("v", false, "explain every record examined, not only the ones that changed")
 	)
-	dbPath := dbFlag(fs)
+	common := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := common.load()
+	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	_, store, err := open(ctx, *dbPath)
+	_, store, err := openLedger(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	acts, err := activitysqlite.Open(ctx, *activityPath)
+	// Reconciliation compares the two stores, so unlike the dashboard it cannot proceed
+	// without the activity side: with nothing to compare against, every reservation would
+	// look stranded. Named plainly rather than reported as a missing file, because the
+	// likeliest cause is a configured path pointing somewhere nothing has written yet.
+	if _, err := os.Stat(cfg.Activity); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("no activity database at %s.\n"+
+			"Reconciliation compares the ledger against recorded requests, so it needs both.\n"+
+			"Check store.activity in %s, or pass -activity",
+			cfg.Activity, configSourceText(cfg))
+	}
+
+	acts, err := activitysqlite.Open(ctx, cfg.Activity)
 	if err != nil {
-		return fmt.Errorf("open activity database: %w", err)
+		return fmt.Errorf("open activity database %s: %w", cfg.Activity, err)
 	}
 	defer acts.Close()
 

@@ -611,3 +611,68 @@ error as a non-event and a nil store as "do not record". The two may point at th
 same file, but they never share a transaction.
 
 A later team version can swap in a shared ledger/service without changing budget semantics.
+
+## Configuration
+
+There is one configuration model, resolved in one place, in this order:
+
+```text
+built-in defaults  <  config file  <  environment  <  command flag
+```
+
+Each stage overwrites whole values. Nothing is merged, so a value comes from exactly
+one stage and the config records which — an unexpected setting is explainable without
+reading source. Commands receive the resolved configuration they need rather than
+sharing a mutable global options object.
+
+Environment overrides exist only for the three operational paths a CI job or container
+legitimately redirects without writing a file: the config file itself and the two
+stores. An environment variable per field would be a second configuration format that
+nothing documents.
+
+Provider credentials are deliberately outside all of it. AWS region and credentials
+stay the AWS SDK's business, resolved through its own well-known files, variables, and
+profiles; throttle does not read, store, or print them, and is not a credentials
+manager. `config show` reports non-secret effective values and names the *source* of
+external provider configuration rather than resolving it.
+
+Parsing configuration has no side effects. It starts no reconciliation, advances no
+period, opens no listener, and calls no provider. `config check` is read-only over both
+stores and exits nonzero on a problem, which is what makes it usable as a CI step.
+
+### Monthly is syntax, not the abstraction
+
+A config file's period rule compiles down to the same durable `budget.Definition` the
+engine already uses. `recur: monthly` is convenience syntax for the same period model a
+two-year fixed grant or a six-hour experiment window uses; no "month" assumption exists
+in the parsing layer.
+
+An anchor is **required** in a file and never taken from the clock. A definition's
+fingerprint covers its anchor, so a file whose anchor defaulted to the current month
+would describe a different budget every month. A flag-defined budget may default its
+anchor, because a flag is a statement about now.
+
+### A file does not silently rewrite a stored definition
+
+Configuration and the ledger are compared, not synchronized. Comparison is a pure
+function over two sets of definitions that opens nothing and writes nothing, reporting
+per budget whether it is new, unchanged, renamed, changed, or present in the ledger and
+absent from the file.
+
+Only creating a budget the ledger does not have takes nothing away from anyone, so it
+is the one case a command may apply. A stored definition governs money that has already
+been spent against it, and a definition's fingerprint covers its allocation and period
+rule — so "make the ledger match the file" is a command that can change what a live
+budget may spend on the strength of a YAML edit. A budget missing from a file is far
+more often an incomplete file than an instruction to delete accounting history, and
+deleting is not recoverable. What a command should do about a changed definition, and
+about a rename, are open product decisions (issues #21 and #22); reporting the
+difference is correct and safe whichever way they land.
+
+### A budget outside its term is not an error
+
+A budget anchored in the future has not started, and one past its end date has
+finished. Neither has a current period, and neither is a failure: the definition is
+valid and stored. The CLI says so in dates — "not started yet: it begins 2026-09-01" —
+rather than surfacing the engine's `ErrNoSuchPeriod`, which is accurate and gives a
+reader nothing to act on.

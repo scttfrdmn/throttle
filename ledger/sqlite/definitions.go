@@ -270,11 +270,13 @@ func nullableParent(id string) any {
 	return id
 }
 
+// rolloverMode is the spelling stored in the database.
+//
+// Always canonical, so a mode that arrived as the zero value reads back as
+// "none" rather than as an empty string that a later comparison would treat as a
+// different policy.
 func rolloverMode(m budget.RolloverMode) string {
-	if m == "" {
-		return string(budget.RolloverNone)
-	}
-	return string(m)
+	return string(m.Normalized())
 }
 
 func locationName(loc *time.Location) string {

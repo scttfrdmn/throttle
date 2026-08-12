@@ -326,6 +326,13 @@ func (d Definition) PeriodID(seq int) string {
 // share its ledger, and comparing fingerprints is how that disagreement is
 // detected. Name is excluded: it is a display label, so renaming a budget is not
 // a semantic conflict.
+//
+// Fields that have more than one spelling are normalized first. A rollover mode
+// of "" and one of "none" describe the same policy -- Validate accepts both and
+// CarryInto returns zero for both -- so hashing them differently would make two
+// identical budgets look like a conflict. That is not hypothetical: a config
+// file that omits a rollover block produces "" and the ledger stores "none",
+// which reported drift between a definition and its own stored copy.
 func (d Definition) Fingerprint() string {
 	loc := "UTC"
 	if d.Location != nil {
@@ -335,7 +342,7 @@ func (d Definition) Fingerprint() string {
 	fmt.Fprintf(&b, "id=%s\x00parent=%s\x00alloc=%d\x00borrow=%d\x00",
 		d.ID, d.ParentID, int64(d.Allocation), int64(d.Borrow))
 	fmt.Fprintf(&b, "mode=%s\x00cap=%d\x00capbp=%d\x00",
-		d.Rollover.Mode, int64(d.Rollover.Cap), d.Rollover.CapBasisPoints)
+		d.Rollover.Mode.Normalized(), int64(d.Rollover.Cap), d.Rollover.CapBasisPoints)
 	fmt.Fprintf(&b, "recur=%s\x00every=%d\x00tz=%s\x00anchor=%d\x00end=%d",
 		d.Recurrence, int64(d.Every), loc, d.AnchorAt.UTC().UnixNano(), endNanos(d.EndAt))
 
