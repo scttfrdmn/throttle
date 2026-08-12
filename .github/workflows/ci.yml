@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# No AWS credentials, and no secrets of any kind. The provider tests that would need them are
+# behind the integration tag and are compiled here rather than run: a suite that only passes
+# for somebody holding an account is a suite nobody can trust a pull request against.
+# Everything below runs from a checkout and nothing else.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,8 +20,25 @@ jobs:
           go-version-file: go.mod
       - run: gofmt -d . | tee /tmp/gofmt.diff && test ! -s /tmp/gofmt.diff
       - run: go vet ./...
+      - run: go build ./...
+      # The integration-tagged files are excluded from the default build, so nothing else here
+      # would notice them going stale. Vetted and built, never run.
+      - run: go vet -tags integration ./...
+      - run: go build -tags integration ./...
       - run: go test -race ./...
       - name: verify go.mod is tidy
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
+
+  # Proof that the platforms a release targets still compile. Deliberately not a matrix of
+  # runners: these are cross-compiles of a pure-Go binary, so one job builds all four in
+  # seconds and four jobs would buy nothing but a longer status list. Nothing is published.
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make cross
