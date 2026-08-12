@@ -1,0 +1,36 @@
+{{define "error.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="/"><img src="/static/throttle-logo.png" alt="throttle" width="256" height="256"></a>
+  <nav><a href="/">← dashboard</a></nav>
+</header>
+
+<main class="errorpage">
+  <h1>{{.Status}}{{if eq .Status 404}} — not found{{end}}</h1>
+  {{if eq .Status 404}}
+  <p>Nothing here. A mistyped budget id or request id lands on this page rather than on a
+     wall of zeros, because an empty dashboard and a missing budget are different facts.</p>
+  {{else}}
+  <p>The dashboard could not read what it needed. Budget figures come from the ledger and
+     request history from the activity store; the message below says which one refused.</p>
+  {{end}}
+  <pre>{{.Message}}</pre>
+  <p class="muted">Nothing was written. The dashboard is read-only.</p>
+</main>
+
+<footer>
+  <span>throttle{{if .Version}} {{.Version}}{{end}}</span>
+</footer>
+
+</body>
+</html>
+{{end}}

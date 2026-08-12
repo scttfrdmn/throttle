@@ -36,6 +36,12 @@ func TestCoreDoesNotDependOnProviderSDKs(t *testing.T) {
 		// accumulates. It classifies normalized durable facts; an SDK import here would
 		// mean it had started reading provider responses instead.
 		"throttle/reconcile",
+		// The read model and the dashboard are the read half of the same rule. A UI is
+		// where "just import the SDK to get the model's display name" is most tempting,
+		// and an SDK type reaching either of them would mean a display was reading
+		// provider responses rather than the normalized durable record.
+		"throttle/report",
+		"throttle/dashboard",
 	}
 
 	// Any SDK a provider adapter might pull in. A neutral package must import none

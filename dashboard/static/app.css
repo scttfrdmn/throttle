@@ -1,0 +1,375 @@
+/* throttle dashboard.
+ *
+ * The palette is read off the logo: a cream ground, dark navy rounded display type, and a
+ * retro sunset arc running gold -> amber -> orange -> red-orange, with teal opposite it.
+ * The needle in the wordmark's "o" is where the gauge accent comes from.
+ *
+ * Readability wins every argument with the metaphor. Colour never carries a fact on its
+ * own: every sign is printed, every state is worded, and the palette only reinforces what
+ * the text already says. */
+
+:root {
+  --cream:      #faf5ea;
+  --paper:      #fffdf8;
+  --ink:        #1d2a3a;
+  --ink-soft:   #4a5a6e;
+  --ink-faint:  #8a97a6;
+  --rule:       #e3dccb;
+
+  --gold:       #e5a52c;
+  --amber:      #e8821f;
+  --orange:     #e0561c;
+  --red:        #c0362c;
+  --teal:       #2f8a86;
+  --teal-soft:  #cfe4e2;
+
+  --held:       #7a6aa8;
+
+  --radius: 12px;
+  --shadow: 0 1px 2px rgba(29,42,58,.06), 0 6px 18px rgba(29,42,58,.05);
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 15px; }
+
+body {
+  margin: 0;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: "Avenir Next", "Nunito", "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 .5rem;
+}
+h1 { font-size: 1.5rem; }
+h2 { font-size: .82rem; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-soft); }
+h3 { font-size: .95rem; }
+
+a { color: var(--orange); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre, .id, .num, .v, .asof-time {
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+code { background: rgba(29,42,58,.05); padding: .05em .3em; border-radius: 4px; font-size: .88em; }
+pre {
+  background: var(--ink); color: var(--cream); padding: .8rem 1rem;
+  border-radius: var(--radius); overflow-x: auto; font-size: .85rem;
+}
+
+/* ---------- chrome ---------- */
+
+.top {
+  display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;
+  padding: .9rem 1.5rem;
+  background: var(--paper);
+  border-bottom: 2px solid var(--rule);
+}
+/* The logo is a square lockup on its own cream ground, which happens to match --cream,
+ * so it sits in the header without a plate around it. */
+.brand { display: flex; align-items: center; }
+.brand img { display: block; height: 62px; width: 62px; border-radius: 10px; }
+
+.selectors { display: flex; gap: 1rem; align-items: flex-end; margin-left: auto; }
+.selectors label {
+  display: flex; flex-direction: column; gap: .2rem;
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint);
+}
+.selectors select {
+  font: inherit; font-size: .9rem;
+  padding: .35rem .5rem;
+  border: 1px solid var(--rule); border-radius: 8px;
+  background: var(--paper); color: var(--ink);
+}
+
+.asof { text-align: right; font-size: .78rem; }
+.selectors + .asof { margin-left: 0; }
+.top nav { margin-left: auto; }
+.asof-label { color: var(--ink-faint); text-transform: uppercase; letter-spacing: .08em; }
+.asof-time { display: block; color: var(--ink-soft); }
+
+main { max-width: 1500px; margin: 0 auto; padding: 1.5rem; }
+
+footer {
+  display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  max-width: 1500px; margin: 0 auto; padding: 1.5rem;
+  border-top: 1px solid var(--rule);
+  font-size: .78rem; color: var(--ink-faint);
+}
+
+.panel {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.muted     { color: var(--ink-faint); }
+.subtitle  { color: var(--ink-faint); font-size: .76rem; line-height: 1.5; margin: .6rem 0 0; }
+.subtitle.wide { max-width: 1500px; margin: -.5rem auto 1.5rem; padding: 0 1.5rem; }
+.good      { color: var(--teal); }
+.warn      { color: var(--amber); }
+.bad       { color: var(--red); }
+.held      { color: var(--held); }
+.unmapped  { color: var(--ink-soft); font-style: italic; }
+
+.flag {
+  display: inline-block;
+  font-size: .72rem; color: var(--amber);
+  background: rgba(232,130,31,.1);
+  border-radius: 5px; padding: .05rem .4rem;
+}
+.badge {
+  display: inline-block;
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--teal); background: var(--teal-soft);
+  border-radius: 5px; padding: .05rem .4rem;
+}
+
+.notice {
+  border-left: 4px solid var(--gold);
+  background: rgba(229,165,44,.08);
+  padding: .6rem .9rem; margin: 0 0 1rem;
+  border-radius: 0 8px 8px 0;
+  font-size: .86rem;
+}
+.notice.warn { border-color: var(--orange); background: rgba(224,86,28,.08); }
+.notice.info { border-color: var(--teal);   background: rgba(47,138,134,.08); }
+
+/* ---------- first run ---------- */
+
+.firstrun { max-width: 640px; margin: 4rem auto; }
+.firstrun h1 { font-size: 1.6rem; }
+.firstrun pre { margin: 1.2rem 0; }
+
+/* ---------- hero row ---------- */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(260px, 1.1fr) minmax(200px, .9fr) minmax(200px, .9fr);
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.hero .panel { margin: 0; }
+
+/* the gauge */
+
+.dial { width: 100%; height: auto; display: block; }
+.dial-face   { stroke: var(--rule); stroke-width: 14; stroke-linecap: round; }
+.dial-arc path { stroke: var(--gold); stroke-width: 8; stroke-linecap: round; }
+.gauge.over .dial-arc path { stroke: var(--red); }
+
+.tick        { stroke: var(--paper); stroke-width: 2; }
+.tick.redline { stroke: var(--red); stroke-width: 2.5; }
+.tick-label  { fill: var(--ink-faint); font-size: 10px; text-anchor: middle; dominant-baseline: middle; }
+.tick-label.redline { fill: var(--red); font-weight: 700; }
+.redline-mark { stroke: var(--red); stroke-width: 3; }
+
+.needle { stroke: var(--orange); stroke-width: 4; stroke-linecap: round; }
+.hub    { fill: var(--ink); }
+.hub.dead { fill: var(--ink-faint); }
+
+.reading {
+  fill: var(--ink); font-size: 28px; font-weight: 700; text-anchor: middle;
+  font-family: "SF Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums;
+}
+.gauge.over .reading { fill: var(--red); }
+.gauge.state-not-started .reading,
+.gauge.state-ended .reading,
+.gauge.state-no-headroom .reading { font-size: 19px; fill: var(--ink-soft); }
+
+.why { font-size: .85rem; color: var(--ink-soft); margin: 0; }
+
+/* the bipolar bank display */
+
+.bank-amount {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 2.1rem; font-weight: 700; margin: .2rem 0 0;
+  font-variant-numeric: tabular-nums;
+}
+.bank.banked   .bank-amount { color: var(--teal); }
+.bank.borrowed .bank-amount { color: var(--orange); }
+.bank-label {
+  font-size: .74rem; letter-spacing: .16em; font-weight: 700;
+  color: var(--ink-soft); margin: 0 0 1rem;
+}
+
+.bipolar { display: flex; align-items: center; gap: .5rem; }
+.bipolar .pole {
+  font-size: .6rem; letter-spacing: .08em; color: var(--ink-faint); white-space: nowrap;
+}
+.bipolar .track {
+  position: relative; flex: 1; height: 22px;
+  background: rgba(29,42,58,.04); border-radius: 5px;
+}
+.bipolar .axis {
+  position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+  background: var(--ink); transform: translateX(-1px);
+}
+.bipolar .fill { position: absolute; top: 4px; bottom: 4px; max-width: 50%; border-radius: 3px; }
+.bipolar .fill.right { left: 50%; background: var(--teal); }
+.bipolar .fill.left  { right: 50%; background: var(--orange); }
+.bipolar .zero {
+  position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  font-size: .6rem; color: var(--ink-faint);
+}
+
+/* rates and end state */
+
+.rates dl, .endstate dl { margin: 0; }
+.rates dt, .endstate dt {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-faint); margin-top: .8rem;
+}
+.rates dd, .endstate dd { margin: 0; }
+.rates dd.big, .endstate dd.big {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+
+/* ---------- position ---------- */
+
+.period {
+  display: flex; align-items: center; gap: .75rem;
+  font-size: .78rem; color: var(--ink-soft); margin-bottom: .3rem;
+}
+.period .elapsed {
+  flex: 1; height: 8px; background: rgba(29,42,58,.06); border-radius: 4px; overflow: hidden;
+}
+.period .elapsed-fill { height: 100%; background: var(--teal); }
+
+.figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: .9rem 1.5rem;
+  margin-top: 1rem;
+}
+.fig { display: flex; flex-direction: column; gap: .1rem; }
+.fig .k { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); }
+.fig .v { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fig .v.small { font-size: .92rem; font-weight: 600; word-break: break-all; }
+.fig .n { font-size: .7rem; color: var(--ink-faint); line-height: 1.35; }
+.fig.strong .v { font-size: 1.5rem; }
+.fig.held .v { color: var(--held); }
+
+.rollover {
+  margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--rule);
+  font-size: .85rem;
+}
+.rollover p { margin: .2rem 0; }
+
+/* ---------- chart ---------- */
+
+.timeline { width: 100%; height: auto; display: block; }
+.grid  { stroke: var(--rule); stroke-width: 1; }
+/* Anchored at the end so the figures sit in the left gutter instead of running out
+ * across the plot and striking through the spend line at $0.00. */
+.ytick { fill: var(--ink-faint); font-size: 10px; text-anchor: end; }
+.xtick { fill: var(--ink-faint); font-size: 10px; text-anchor: middle; }
+
+.line { stroke-width: 2.5; }
+.line.target  { stroke: var(--ink-faint); stroke-dasharray: 5 4; }
+.line.allowed { stroke: var(--gold);      stroke-dasharray: 2 4; }
+.line.actual  { stroke: var(--orange); stroke-width: 3; }
+
+.reserved-band { fill: var(--held); opacity: .16; }
+
+.now { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 3 3; }
+
+.gap { stroke-width: 6; opacity: .35; }
+.gap.banked   { stroke: var(--teal); }
+.gap.borrowed { stroke: var(--orange); }
+.gap-label { fill: var(--ink-soft); font-size: 11px; font-weight: 700; }
+
+.legend { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .76rem; color: var(--ink-soft); margin: .8rem 0 0; }
+.legend .key { display: inline-block; width: 18px; height: 3px; margin-right: .35rem; vertical-align: middle; }
+.legend .key.actual   { background: var(--orange); }
+.legend .key.target   { background: var(--ink-faint); }
+.legend .key.allowed  { background: var(--gold); }
+.legend .key.reserved { background: var(--held); height: 10px; opacity: .4; }
+.legend .key.now      { background: var(--ink); }
+
+/* ---------- tables ---------- */
+
+table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+thead th {
+  text-align: left; font-size: .64rem; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-faint); font-weight: 700;
+  padding: .4rem .5rem; border-bottom: 1px solid var(--rule); white-space: nowrap;
+}
+tbody td { padding: .4rem .5rem; border-bottom: 1px solid rgba(227,220,203,.55); vertical-align: top; }
+tbody tr:hover { background: rgba(229,165,44,.05); }
+tfoot td { padding: .4rem .5rem; font-size: .78rem; color: var(--ink-soft); }
+
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.id { font-size: .74rem; color: var(--ink-soft); }
+td.usage { font-size: .76rem; color: var(--ink-soft); white-space: nowrap; }
+
+.events { display: block; overflow-x: auto; white-space: nowrap; }
+
+/* Cost completeness. Colour is a second signal only: the "+" and the words "unknown" and
+ * "unresolved" are in the text, so a reader who cannot see the hue loses nothing. */
+td.cost, .fig .v.cost { font-weight: 600; }
+.cost-partial    { color: var(--amber); }
+.cost-unknown    { color: var(--ink-faint); font-style: italic; }
+.cost-unresolved { color: var(--held); font-style: italic; }
+.cost-none       { color: var(--ink-faint); }
+
+.mode { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+.mode-monitor { color: var(--ink-faint); }
+.mode-enforce { color: var(--teal); }
+.mode-wait    { color: var(--gold); }
+
+tr.expired { background: rgba(224,86,28,.06); }
+tr.selected { background: rgba(47,138,134,.07); }
+tr.status-unresolved, tr.status-outstanding { background: rgba(122,106,168,.06); }
+
+.tree td a { font-weight: 600; }
+.state-not-started, .state-ended, .state-no-headroom { color: var(--ink-faint); }
+
+/* ---------- breakdowns ---------- */
+
+.breakdowns {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.breakdown { margin: 0; }
+.breakdown td.key { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.breakdown td.bar { width: 30%; }
+.breakdown td.bar div { height: 9px; background: var(--gold); border-radius: 3px; min-width: 1px; }
+.breakdown td.pct { color: var(--ink-faint); font-size: .76rem; }
+
+/* ---------- reconciliation ---------- */
+
+.recon.needs { border-left: 4px solid var(--orange); }
+.counts { margin: .4rem 0; padding-left: 1.2rem; font-size: .86rem; }
+.counts li { margin: .2rem 0; }
+details summary { cursor: pointer; font-size: .84rem; color: var(--orange); margin: .6rem 0; }
+
+/* ---------- detail page ---------- */
+
+.detail h1 { margin-bottom: 1rem; }
+.detail h1 code { font-size: .8em; }
+.errorpage { max-width: 640px; margin: 4rem auto; }
+.errorpage h1 { font-size: 2rem; }
+
+/* ---------- narrower screens ---------- */
+
+@media (max-width: 1200px) {
+  .hero { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
+}
+@media (max-width: 720px) {
+  .hero { grid-template-columns: 1fr; }
+  .selectors { margin-left: 0; width: 100%; }
+  .top nav, .asof { margin-left: 0; }
+  main, footer { padding: 1rem; }
+}

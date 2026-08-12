@@ -1,0 +1,217 @@
+{{define "detail.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="detail">
+
+<header class="top">
+  <a class="brand" href="/"><img src="/static/throttle-logo.png" alt="throttle" width="256" height="256"></a>
+  <nav><a href="/">← dashboard</a></nav>
+  <div class="asof"><span class="asof-label">as of</span><span class="asof-time">{{.AtDisplay}}</span></div>
+</header>
+
+<main>
+
+<h1>Request <code>{{.Event.RequestID}}</code></h1>
+
+<section class="panel">
+  <h2>What was governed</h2>
+  <div class="figures">
+    <div class="fig"><span class="k">Time</span><span class="v small">{{.Event.TimeFull}}</span></div>
+    <div class="fig"><span class="k">Budget</span><span class="v small">{{.Event.BudgetID}}</span>
+      <span class="n">consumed: {{.Event.Scopes}}</span></div>
+    <div class="fig"><span class="k">Operation</span><span class="v small">{{.Event.Operation}}</span></div>
+    <div class="fig"><span class="k">Enforcement mode</span>
+      <span class="v small mode mode-{{.Event.Mode}}">{{.Event.Mode}}</span>
+      <span class="n">the posture that actually governed this call</span></div>
+    <div class="fig"><span class="k">Status</span><span class="v small">{{.Event.Status}} · {{.Event.Outcome}}</span></div>
+    <div class="fig"><span class="k">Latency</span><span class="v small">{{.Event.Latency}}</span></div>
+  </div>
+  {{if .Event.Error}}<p class="notice warn">{{.Event.Error}}</p>{{end}}
+</section>
+
+<!-- Three independent identity fields, three rows. -->
+<section class="panel">
+  <h2>Identity</h2>
+  <div class="figures">
+    <div class="fig"><span class="k">Access provider</span><span class="v small">{{.Event.AccessProvider}}</span>
+      <span class="n">the path the request took</span></div>
+    <div class="fig"><span class="k">Model publisher</span><span class="v small">{{.Event.Publisher}}</span>
+      <span class="n">who made the model</span></div>
+    <div class="fig"><span class="k">Model</span>
+      <span class="v small {{if not .Event.ModelKnown}}unmapped{{end}}">{{.Event.Model}}</span>
+      <span class="n">{{if .Event.ModelKnown}}canonical name{{else}}not in the catalog, so the exact provider ID is shown{{end}}</span></div>
+    <div class="fig"><span class="k">Provider model ID</span>
+      <span class="v small">{{.Event.ProviderModelID}}</span>
+      <span class="n">the identity the provider's bill uses</span></div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Money</h2>
+  <div class="figures">
+    <div class="fig"><span class="k">Estimated</span><span class="v">{{.Event.Estimated}}</span>
+      <span class="n">quality: {{.EstimateQuality}}</span></div>
+    <div class="fig held"><span class="k">Reserved</span><span class="v">{{.Event.Reserved}}</span>
+      <span class="n">headroom held while the call ran</span></div>
+    <div class="fig"><span class="k">Actual</span>
+      <span class="v cost cost-{{.Event.ActualState}}">{{.Event.Actual}}</span>
+      <span class="n">{{.Event.ActualTitle}}</span></div>
+    {{if .Event.HasOverrun}}
+    <div class="fig"><span class="k">Overrun</span><span class="v bad">{{.Event.Overrun}}</span>
+      <span class="n">the actual cost exceeded the reservation. Recorded, not clamped: the
+        estimate was wrong and the money is gone regardless.</span></div>
+    {{end}}
+  </div>
+  <p class="subtitle">Priced by <code>{{.QuoteSource}}</code> {{.QuoteVersion}},
+    captured {{.QuoteCapturedAt}}. The quote is the rates as they stood at admission, so a
+    later catalog change cannot rewrite what this call cost.</p>
+</section>
+
+<section class="panel">
+  <h2>Usage</h2>
+  {{if .Usage}}
+  <table>
+    <thead><tr><th>Dimension</th><th class="num">Count</th><th></th></tr></thead>
+    <tbody>
+    {{range .Usage}}
+      <tr><td><code>{{.Dimension}}</code>{{if not .Token}} <span class="badge">non-token</span>{{end}}</td>
+          <td class="num">{{.Count}}</td>
+          <td>{{if .Unpriced}}<span class="flag">no price for this dimension</span>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="subtitle">Dimensions are shown as recorded. Not all activity is token-based, and
+    a unit throttle has not seen before still appears here rather than being dropped.</p>
+  {{else}}
+  <p class="muted">No usage was reported for this request.</p>
+  {{end}}
+</section>
+
+{{with .Agent}}
+<!-- One governed request, one reservation, one charge; the steps beneath are accounting
+     detail, not transactions of their own. No step carries content, because none is stored. -->
+<section class="panel agent">
+  <h2>Agent turn</h2>
+  <div class="figures">
+    <div class="fig"><span class="k">Agent</span><span class="v small">{{.AgentID}}</span></div>
+    <div class="fig"><span class="k">Alias</span><span class="v small">{{.AliasID}}</span></div>
+    <div class="fig"><span class="k">Version</span><span class="v small">{{.Version}}</span></div>
+    <div class="fig"><span class="k">Session</span><span class="v small">{{.SessionID}}</span>
+      <span class="n">groups turns of one conversation. It groups records; it does not scope money.</span></div>
+    <div class="fig"><span class="k">Request charge</span><span class="v">{{.Total}}</span>
+      <span class="n">the authoritative figure</span></div>
+  </div>
+
+  {{if .Steps}}
+  <table>
+    <thead><tr>
+      <th class="num">#</th><th>Phase</th><th>Collaborator</th><th>Publisher</th><th>Model</th>
+      <th>Usage</th><th class="num">Cost</th><th class="num">Latency</th><th>At</th>
+    </tr></thead>
+    <tbody>
+    {{range .Steps}}
+      <tr>
+        <td class="num">{{.Seq}}</td>
+        <td>{{.Kind}}</td>
+        <td>{{if .Collaborator}}{{.Collaborator}}{{else}}—{{end}}</td>
+        <td>{{.Publisher}}</td>
+        <td class="{{if not .ModelKnown}}unmapped{{end}}">{{.Model}}</td>
+        <td class="usage">{{.Usage}}</td>
+        <td class="num">{{.Cost}}</td>
+        <td class="num">{{.Latency}}</td>
+        <td>{{.At}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+    <tfoot><tr><td colspan="6">steps shown sum to</td><td class="num">{{.StepSum}}</td><td colspan="2"></td></tr></tfoot>
+  </table>
+  {{end}}
+
+  {{if .Events}}
+  <p>Non-model activity:
+    {{range $i, $e := .Events}}{{if $i}}, {{end}}<code>{{$e.Kind}}</code> ×{{$e.Count}}{{end}}</p>
+  <p class="subtitle">These are counts, not costs: the provider reports no billable quantity
+    for them, so their cost lands on the provider's bill outside throttle's view.</p>
+  {{end}}
+
+  {{if .GapNote}}<p class="notice {{if .GapMaterial}}warn{{else}}info{{end}}">{{.GapNote}}</p>{{end}}
+  {{if .Note}}<p class="notice info">{{.Note}}</p>{{end}}
+  <p class="subtitle">throttle admitted the turn, not the individual model calls inside it.
+    The steps are what the provider reported about the turn's internals. No prompt, response,
+    or trace rationale appears here — none is stored.</p>
+</section>
+{{end}}
+
+{{with .Runtime}}
+<section class="panel runtime">
+  <h2>Hosted runtime</h2>
+  <div class="figures">
+    <div class="fig"><span class="k">Runtime</span><span class="v small">{{.RuntimeID}}</span></div>
+    <div class="fig"><span class="k">Qualifier</span><span class="v small">{{.Qualifier}}</span></div>
+    <div class="fig"><span class="k">Session</span><span class="v small">{{.SessionID}}</span>
+      <span class="n">the only identifier present both on the call and in the usage telemetry</span></div>
+    <div class="fig"><span class="k">Provider request</span><span class="v small">{{.ProviderRequestID}}</span></div>
+    <div class="fig"><span class="k">Trace</span><span class="v small">{{.TraceID}}</span></div>
+    <div class="fig"><span class="k">HTTP status</span><span class="v small">{{.StatusCode}}</span>
+      <span class="n">a failure inside the hosted agent arrives as a non-error response with a
+        failing status; this number is the only evidence</span></div>
+    <div class="fig"><span class="k">Sizes</span><span class="v small">{{.Sizes}}</span>
+      <span class="n">sizes, not payloads</span></div>
+    <div class="fig held"><span class="k">Max exposure held</span><span class="v">{{.MaxExposure}}</span>
+      <span class="n">headroom, not a cost, not an estimate, and not a limit the platform enforces</span></div>
+    <div class="fig"><span class="k">Runtime cost</span>
+      <span class="v cost">{{.ReconciledCost}}</span>
+      <span class="n">{{if .Reconciled}}observed {{.ReconciledAt}} from {{.ReconciledFrom}}{{else}}not yet observed{{end}}</span></div>
+  </div>
+
+  {{if .ReconciledUse}}
+  <table>
+    <thead><tr><th>Observed dimension</th><th class="num">Count</th></tr></thead>
+    <tbody>{{range .ReconciledUse}}<tr><td><code>{{.Dimension}}</code></td><td class="num">{{.Count}}</td></tr>{{end}}</tbody>
+  </table>
+  {{end}}
+
+  {{if .Explain}}<p class="notice info">{{.Explain}}</p>{{end}}
+  {{if .Note}}<p class="notice info">{{.Note}}</p>{{end}}
+</section>
+{{end}}
+
+{{if .Repairs}}
+<section class="panel repairs">
+  <h2>Reconciliation trail</h2>
+  <table>
+    <thead><tr><th>At</th><th>Class</th><th>Reason</th><th>Observed</th><th>Produced</th>
+      <th class="num">Money</th><th>Quote</th><th>Detail</th></tr></thead>
+    <tbody>
+    {{range .Repairs}}
+      <tr>
+        <td>{{.At}}</td><td>{{.Class}}</td><td><code>{{.Reason}}</code></td>
+        <td>{{.Observed}}</td><td>{{.Produced}}</td>
+        <td class="num">{{if .Money}}{{.Money}} {{.Amount}}{{else}}none{{end}}</td>
+        <td>{{.Quote}}</td><td>{{.Detail}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="subtitle">Append-only, in the reconciler's own vocabulary. A repaired record is
+    not a problem: it is evidence a crash was cleaned up.</p>
+</section>
+{{end}}
+
+</main>
+
+<footer>
+  <span>throttle{{if .Version}} {{.Version}}{{end}}</span>
+  <span class="muted">local read-only dashboard · no request or response content is stored,
+    so none can be shown</span>
+</footer>
+
+</body>
+</html>
+{{end}}

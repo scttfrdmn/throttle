@@ -1,0 +1,507 @@
+{{define "page.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body{{if .Budget}} data-budget="{{.Budget}}" data-period="{{.PeriodID}}"{{end}}>
+
+<header class="top">
+  <a class="brand" href="/">
+    <img src="/static/throttle-logo.png" alt="throttle" width="256" height="256">
+  </a>
+
+  {{if not .Empty}}
+  <form class="selectors" method="get" action="/">
+    <label>Budget
+      <select name="budget" onchange="this.form.submit()">
+        {{range .Budgets}}<option value="{{.ID}}"{{if .Selected}} selected{{end}}>{{.Indent}}{{.ID}}{{if .Name}} — {{.Name}}{{end}}</option>{{end}}
+      </select>
+    </label>
+    <label>Period
+      <select name="period" onchange="this.form.submit()">
+        {{range .Periods}}<option value="{{.PeriodID}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+      </select>
+    </label>
+    <noscript><button type="submit">Show</button></noscript>
+  </form>
+  {{end}}
+
+  <div class="asof">
+    <span class="asof-label">as of</span>
+    <span class="asof-time" data-field="at">{{.AtDisplay}}</span>
+  </div>
+</header>
+
+{{if .Empty}}
+<main class="firstrun">
+  <h1>No budgets are defined.</h1>
+  <p>throttle has nothing to show yet, which is not the same as showing zero spend.
+     Define a budget and this page fills in.</p>
+  <pre>throttle define -id research -budget 2500 -recur monthly</pre>
+  <p class="muted">A budget is an allocation over a period. Everything on this dashboard
+     — pace, bank, burn pressure, projection — is measured against one.</p>
+</main>
+{{else}}
+
+<main>
+
+{{if .Historic}}
+<p class="notice info">This is a past period. Its figures are final, and the rates and the
+gauge describe how it ran rather than how anything is running now.</p>
+{{end}}
+
+{{range .Notices}}
+<p class="notice {{.Level}}">{{.Text}}</p>
+{{end}}
+
+<!-- The three headline answers: how hard is this burning, is it ahead or behind, and
+     where does it land. -->
+<section class="hero">
+
+  <div class="panel gauge state-{{.Pressure.State}}{{if .Pressure.Over}} over{{end}}">
+    <h2>Burn pressure</h2>
+    <svg viewBox="0 0 {{.Pressure.Width}} {{.Pressure.Height}}" class="dial" role="img"
+         aria-label="Burn pressure {{.Pressure.Reading}}">
+      <path class="dial-face" d="{{.Pressure.Face}}" fill="none"/>
+      <g class="dial-arc" data-field="gauge-arc-group">
+        {{if .Pressure.Arc}}<path d="{{.Pressure.Arc}}" data-field="gauge-arc" fill="none"/>{{end}}
+      </g>
+      {{range .Pressure.Ticks}}
+      <line class="tick{{if .Redline}} redline{{end}}" x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}"/>
+      <text class="tick-label{{if .Redline}} redline{{end}}" x="{{.TX}}" y="{{.TY}}">{{.Label}}</text>
+      {{end}}
+      <line class="redline-mark" x1="{{.Pressure.RedlineX1}}" y1="{{.Pressure.RedlineY1}}"
+            x2="{{.Pressure.RedlineX2}}" y2="{{.Pressure.RedlineY2}}"/>
+      <g data-field="gauge-needle-group">
+        {{if .Pressure.Measured}}
+        <line class="needle" x1="130" y1="128" x2="{{.Pressure.NeedleX}}" y2="{{.Pressure.NeedleY}}"
+              data-field="gauge-needle"/>
+        <circle class="hub" cx="130" cy="128" r="7"/>
+        {{else}}
+        <circle class="hub dead" cx="130" cy="128" r="7"/>
+        {{end}}
+      </g>
+      <text class="reading" x="130" y="112" data-field="pressure">{{.Pressure.Reading}}</text>
+    </svg>
+
+    {{if .Pressure.Pegged}}
+    <p class="flag">Off the dial. The needle stops at 200%; the reading above does not.</p>
+    {{end}}
+    <p class="why" data-field="pressure-why">{{.Pressure.Why}}</p>
+    {{if .Pressure.LowConfidence}}<p class="flag">{{.Pressure.Confidence}}</p>{{end}}
+    <!-- Permanent, not a tooltip: this number is not percent of budget spent, and the
+         label alone does not prevent that reading. -->
+    <p class="subtitle">{{.Pressure.Subtitle}}</p>
+  </div>
+
+  <div class="panel bank{{if .Bank.Banked}} banked{{end}}{{if .Bank.Borrowed}} borrowed{{end}}">
+    <h2>Pace balance</h2>
+    <p class="bank-amount" data-field="bank-amount">{{.Bank.Amount}}</p>
+    <p class="bank-label" data-field="bank-label">{{.Bank.Label}}</p>
+    <div class="bipolar" role="img" aria-label="{{.Bank.Label}} {{.Bank.Amount}}">
+      <span class="pole left">BORROWED</span>
+      <div class="track">
+        <div class="axis"></div>
+        <div class="fill {{if .Bank.Borrowed}}left{{else}}right{{end}}"
+             style="width:{{.Bank.FillPct}}%" data-field="bank-fill"></div>
+        <div class="zero"><span>0</span></div>
+      </div>
+      <span class="pole right">BANKED</span>
+    </div>
+    <p class="subtitle">{{.Bank.Explain}}</p>
+  </div>
+
+  <div class="panel rates">
+    <h2>Burn rate</h2>
+    <dl>
+      <dt>Average burn to date</dt>
+      <dd class="big" data-field="average-burn">{{.Rates.AverageToDate}}</dd>
+      {{if .Rates.AverageNote}}<dd class="flag">{{.Rates.AverageNote}}</dd>{{end}}
+      <dd class="subtitle">settled spend ÷ elapsed period time. An average over the whole
+        period so far, not a current or instantaneous rate.</dd>
+
+      <dt>Sustainable for the time left</dt>
+      <dd class="big" data-field="sustainable-burn">{{.Rates.Sustainable}}</dd>
+      {{if .Rates.SustainableNote}}<dd class="flag">{{.Rates.SustainableNote}}</dd>{{end}}
+      <dd class="subtitle">remaining allocation ÷ remaining period time.</dd>
+    </dl>
+  </div>
+
+  <div class="panel endstate">
+    <h2>Where this lands</h2>
+    <dl>
+      <dt>Remaining allocation</dt>
+      <dd class="big{{if .EndState.Overspent}} bad{{end}}" data-field="remaining">{{.EndState.RemainingAllocation}}</dd>
+      <dt>Time remaining</dt>
+      <dd data-field="time-remaining">{{.EndState.TimeRemaining}}</dd>
+      <dt>Straight-line projection</dt>
+      <dd class="big" data-field="projection">{{.EndState.Projection}}</dd>
+      {{if .EndState.OverBy}}<dd class="bad">over the allocation by {{.EndState.OverBy}}</dd>{{end}}
+      {{if .EndState.UnderBy}}<dd class="good">under the allocation by {{.EndState.UnderBy}}</dd>{{end}}
+      <dd class="subtitle" data-field="projection-note">{{.EndState.ProjectionNote}}</dd>
+    </dl>
+  </div>
+
+</section>
+
+<!-- The full vocabulary, with no term standing in for another. -->
+<section class="panel position">
+  <h2>{{.Position.BudgetID}}{{if .Position.Name}} — {{.Position.Name}}{{end}}</h2>
+
+  <div class="period">
+    <span data-field="period-start">{{.Position.PeriodStart}}</span>
+    <div class="elapsed"><div class="elapsed-fill" style="width:{{.Position.ElapsedPct}}%"
+         data-field="elapsed-pct"></div></div>
+    <span data-field="period-end">{{.Position.PeriodEnd}}</span>
+  </div>
+  <p class="muted">
+    <span data-field="elapsed">{{.Position.Elapsed}}</span> elapsed,
+    <span data-field="time-remaining-2">{{.Position.TimeRemaining}}</span> remaining
+    · period is {{.Position.PeriodState}}{{if .Position.Provisional}}, carry provisional{{end}}
+  </p>
+
+  <div class="figures">
+    <div class="fig">
+      <span class="k">Allocation</span>
+      <span class="v" data-field="allocation">{{.Position.Allocation}}</span>
+    </div>
+    {{if .Position.HasCarry}}
+    <div class="fig">
+      <span class="k">Carry-in</span>
+      <span class="v" data-field="carry-in">{{.Position.CarryIn}}</span>
+      <span class="n">inherited balance</span>
+    </div>
+    <div class="fig">
+      <span class="k">Envelope total</span>
+      <span class="v" data-field="total">{{.Position.Total}}</span>
+      <span class="n">carry plus allocation</span>
+    </div>
+    {{end}}
+
+    <div class="fig strong">
+      <span class="k">Spent</span>
+      <span class="v" data-field="spent">{{.Position.Spent}}</span>
+      <span class="n">settled. Money that is gone.</span>
+    </div>
+    <div class="fig strong held">
+      <span class="k">Reserved</span>
+      <span class="v" data-field="reserved">{{.Position.Reserved}}</span>
+      <!-- Not spent, and never called spent. -->
+      <span class="n">encumbered by {{.Position.LiveHolds}} live hold(s). Promised, not spent.</span>
+    </div>
+    <div class="fig strong">
+      <span class="k">Remaining</span>
+      <span class="v{{if .Position.Overspent}} bad{{end}}" data-field="remaining-2">{{.Position.Remaining}}</span>
+      <span class="n">total − spent − reserved</span>
+    </div>
+
+    <div class="fig">
+      <span class="k">Target by now</span>
+      <span class="v" data-field="target">{{.Position.TargetByNow}}</span>
+      <span class="n">even pacing to this instant</span>
+    </div>
+    <div class="fig">
+      <span class="k">Allowed by now</span>
+      <span class="v" data-field="allowed">{{.Position.AllowedByNow}}</span>
+      <span class="n">{{if .Position.HasBorrow}}target plus a {{.Position.BorrowWindow}} borrow window{{else}}no borrow window configured{{end}}</span>
+    </div>
+    <div class="fig">
+      <span class="k">Pace balance</span>
+      <span class="v {{if .Bank.Banked}}good{{end}}{{if .Bank.Borrowed}}warn{{end}}" data-field="pace">{{.Position.PaceBalance}}</span>
+      <span class="n">target by now − spent</span>
+    </div>
+    <div class="fig">
+      <span class="k">Spendable now</span>
+      <span class="v" data-field="spendable">{{.Position.SpendableNow}}</span>
+      <span class="n">allowed by now − spent − reserved</span>
+    </div>
+  </div>
+
+  {{if .Position.Binding}}
+  <p class="notice info">The next request is limited by <strong>{{.Position.Binding}}</strong>,
+    not by this budget: an ancestor has less spendable headroom right now.</p>
+  {{end}}
+
+  {{with .Rollover}}
+  <div class="rollover">
+    <h3>Rollover: {{.Mode}}</h3>
+    <p>{{.Explain}}</p>
+    <p>Carry into this period: <strong>{{.CarryIn}}</strong>{{if .HasCap}} · cap {{if .Cap}}{{.Cap}}{{else}}{{.CapPct}}{{end}}{{end}}</p>
+  </div>
+  {{end}}
+</section>
+
+<!-- Budget over time. The vertical gap between the two lines is the pace balance. -->
+<section class="panel chart">
+  <h2>Budget over time</h2>
+  {{if .Chart.Note}}
+  <p class="muted">{{.Chart.Note}}</p>
+  {{else}}
+  <svg viewBox="0 0 {{.Chart.Width}} {{.Chart.Height}}" class="timeline" role="img"
+       aria-label="cumulative spend against the pacing target">
+    {{range .Chart.YTicks}}
+    <line class="grid" x1="{{$.Chart.PlotLeft}}" y1="{{.Y}}" x2="{{$.Chart.PlotRight}}" y2="{{.Y}}"/>
+    <text class="ytick" x="{{$.Chart.PlotLeft}}" dx="-6" y="{{.Y}}" dy="4">{{.Label}}</text>
+    {{end}}
+
+    {{if .Chart.HasReserved}}
+    <!-- Drawn from "now" rightward, never stacked over history: a hold is not a charge
+         that happened at a past instant. -->
+    <rect class="reserved-band" x="{{.Chart.NowX}}" y="{{.Chart.ReservedTop}}"
+          width="{{.Chart.ReservedWidth}}" height="{{.Chart.ReservedHeight}}"/>
+    {{end}}
+
+    {{if .Chart.Allowed}}<path class="line allowed" d="{{.Chart.Allowed}}" fill="none"/>{{end}}
+    <path class="line target" d="{{.Chart.Target}}" fill="none" data-field="chart-target"/>
+    <path class="line actual" d="{{.Chart.Actual}}" fill="none" data-field="chart-actual"/>
+
+    {{if .Chart.ShowGap}}
+    <line class="gap {{if .Chart.GapBanked}}banked{{else}}borrowed{{end}}"
+          x1="{{.Chart.NowX}}" y1="{{.Chart.GapY1}}" x2="{{.Chart.NowX}}" y2="{{.Chart.GapY2}}"/>
+    <text class="gap-label" x="{{.Chart.GapLabelX}}" y="{{.Chart.GapLabelY}}">{{.Chart.GapLabel}}</text>
+    {{end}}
+
+    <line class="now" x1="{{.Chart.NowX}}" y1="0" x2="{{.Chart.NowX}}" y2="{{.Chart.PlotBottom}}"
+          data-field="chart-now"/>
+
+    {{range .Chart.XTicks}}
+    <text class="xtick" x="{{.X}}" y="{{$.Chart.Height}}" dy="-4">{{.Label}}</text>
+    {{end}}
+  </svg>
+  <p class="legend">
+    <span class="key actual"></span> settled spend (steps at each charge)
+    <span class="key target"></span> pacing target
+    {{if .Chart.HasBorrow}}<span class="key allowed"></span> allowed with borrow{{end}}
+    {{if .Chart.HasReserved}}<span class="key reserved"></span> {{.Chart.ReservedLabel}}{{end}}
+    <span class="key now"></span> now
+  </p>
+  <p class="subtitle">The actual line is a step function over persisted charge timestamps.
+    Nothing is interpolated between charges, and reservations are not drawn as though money
+    had already left.</p>
+  {{end}}
+</section>
+
+<!-- Hierarchy. The persisted parent/child budgets, each with its own position. -->
+{{if gt (len .Hierarchy) 1}}
+<section class="panel tree">
+  <h2>Budgets</h2>
+  <table>
+    <thead><tr>
+      <th>Budget</th><th class="num">Allocation</th><th class="num">Spent</th>
+      <th class="num">Reserved</th><th class="num">Remaining</th>
+      <th class="num">Pace balance</th><th class="num">Burn pressure</th>
+    </tr></thead>
+    <tbody>
+    {{range .Hierarchy}}
+      <tr{{if .Selected}} class="selected"{{end}}>
+        <td><a href="/?budget={{.BudgetID}}">{{.Indent}}{{.BudgetID}}</a>
+            {{if .Name}}<span class="muted">{{.Name}}</span>{{end}}
+            {{if .Error}}<span class="flag">{{.Error}}</span>{{end}}</td>
+        <td class="num">{{.Allocation}}</td>
+        <td class="num">{{.Spent}}</td>
+        <td class="num held">{{.Reserved}}</td>
+        <td class="num{{if .Overspent}} bad{{end}}">{{.Remaining}}</td>
+        <td class="num {{if .Banked}}good{{end}}{{if .Borrowed}}warn{{end}}">{{.PaceBalance}}</td>
+        <td class="num state-{{.State}}">{{.Pressure}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="subtitle">A child's request consumes its ancestors' headroom too, which is why
+    a leaf with money left can still be refused.</p>
+</section>
+{{end}}
+
+<!-- Reconciliation. Read-only: opening this page repaired nothing.
+
+     There is deliberately no button here, and there will not be one in v0.1. Reconciling
+     and recovering move money, and a control that does that sitting on an unauthenticated
+     local page is a one-click monetary write reachable by anything that can make a request
+     to this port. The commands stay explicit and named in the panel instead. -->
+
+<section class="panel recon{{if .Recon.Needs}} needs{{end}}">
+  <h2>Bookkeeping</h2>
+  {{if not .Recon.Available}}
+    <p class="notice warn">Request history is unavailable, so outstanding bookkeeping cannot
+      be counted. {{if .Recon.Error}}({{.Recon.Error}}){{end}}</p>
+  {{else}}
+    {{if .Recon.Clean}}
+    <p class="good">Nothing outstanding. Every request in this period has a settled cost.</p>
+    {{else}}
+    <ul class="counts">
+      {{if .Recon.Unresolved}}<li><strong>{{.Recon.Unresolved}}</strong> unresolved liability — ran and incurred cost throttle could not price</li>{{end}}
+      {{if .Recon.OutcomeUnknown}}<li><strong>{{.Recon.OutcomeUnknown}}</strong> outcome unknown — the call's result was never determined</li>{{end}}
+      {{if .Recon.AwaitingExternal}}<li><strong>{{.Recon.AwaitingExternal}}</strong> awaiting external usage — cost arrives out of band and has not yet</li>{{end}}
+      {{if .Recon.ExpiredHolds}}<li><strong>{{.Recon.ExpiredHolds}}</strong> expired hold(s) holding {{.Recon.ExpiredAmount}} — needs <code>throttle recover</code></li>{{end}}
+    </ul>
+    <p>Still encumbered: <strong>{{.Recon.Encumbered}}</strong></p>
+    {{if .Recon.UnpricedDimensions}}
+    <p>The pricing catalog is missing:
+      {{range $i, $d := .Recon.UnpricedDimensions}}{{if $i}}, {{end}}<code>{{$d}}</code>{{end}}</p>
+    {{end}}
+    {{if .Recon.Rows}}
+    <details>
+      <summary>{{len .Recon.Rows}} outstanding request(s)</summary>
+      {{template "events" .Recon.Rows}}
+    </details>
+    {{end}}
+    {{end}}
+    <!-- Outside the clean/not-clean branch on purpose. A repair is not something
+         outstanding, so a budget can be clean and repaired at once, and the operator who
+         most needs to know a crash was cleaned up is the one whose dashboard is otherwise
+         quiet. -->
+    {{if .Recon.Repaired}}
+    <p class="counts"><strong>{{.Recon.Repaired}}</strong> record(s) already repaired by
+      reconciliation — not a problem, evidence a crash was cleaned up</p>
+    {{end}}
+  {{end}}
+  <p class="subtitle">{{.Recon.Explain}}</p>
+</section>
+
+<!-- Live holds behind the Reserved figure. -->
+{{if .Holds}}
+<section class="panel holds">
+  <h2>Reservations</h2>
+  <table>
+    <thead><tr>
+      <th>Reservation</th><th>Request</th><th>Budget</th><th>Model</th><th>Operation</th>
+      <th class="num">Held</th><th class="num">Age</th><th>Expires</th>
+    </tr></thead>
+    <tbody>
+    {{range .Holds}}
+      <tr{{if .Expired}} class="expired"{{end}}>
+        <td class="id">{{.ReservationID}}</td>
+        <td class="id"><a href="/request/{{.RequestID}}">{{.RequestID}}</a></td>
+        <td>{{.BudgetID}}</td>
+        <td class="{{if not .ModelKnown}}unmapped{{end}}">{{.Model}}</td>
+        <td>{{.Operation}}</td>
+        <td class="num held">{{.Amount}}</td>
+        <td class="num">{{.Age}}{{if .Renewals}} · renewed {{.Renewals}}×{{end}}</td>
+        <td>{{.Expires}}{{if .Expired}} <span class="flag">lapsed</span>{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="subtitle">Reserved is not spend. An expired hold is not evidence of zero spend
+    either: the request may have been served and billed, and it remains settleable.</p>
+</section>
+{{end}}
+
+<!-- Recent activity. -->
+<section class="panel activity">
+  <h2>Recent requests</h2>
+  {{if not .Activity.Available}}
+    {{if .HasActivity}}
+    <p class="notice warn">The activity database could not be read, so this table is empty
+      for that reason and not because nothing happened.
+      {{if .Activity.Error}}({{.Activity.Error}}){{end}}</p>
+    {{else}}
+    <p class="notice info">No activity store is configured, so throttle is not recording
+      request history. Budget figures above come from the ledger and are unaffected.</p>
+    {{end}}
+  {{else if not .Activity.Events}}
+    <p class="muted">No requests recorded in this period.</p>
+  {{else}}
+    <p class="muted">
+      {{.Activity.Requests}} request(s) shown, totalling
+      <strong data-field="page-spend">{{.Activity.PageSpend}}</strong>
+      {{if not .Activity.PageComplete}}<span class="flag">a floor: some costs are incomplete</span>{{end}}
+      {{if .Activity.Truncated}}<span class="flag">newest {{.Activity.Limit}} only; older requests exist</span>{{end}}
+    </p>
+    <div data-field="activity">
+      {{template "events" .Activity.Events}}
+    </div>
+    <p class="subtitle">Costs read <code>$0.0412</code> when known, <code>$0.0412+</code>
+      when some usage could not be priced, <code>unknown</code> when none could be, and
+      <code>unresolved</code> while the information that would price them has not arrived.
+      An unknown cost is never shown as $0. No prompt or response text appears here because
+      none is stored.</p>
+  {{end}}
+</section>
+
+<!-- Breakdowns. Access provider, publisher, and model stay three separate questions. -->
+{{if .Breakdowns}}
+<section class="breakdowns">
+  {{range .Breakdowns}}
+  {{if .Rows}}
+  <div class="panel breakdown">
+    <h3>{{.Label}}</h3>
+    <table>
+      <tbody>
+      {{range .Rows}}
+        <tr>
+          <td class="key{{if not .Reported}} unmapped{{end}}">{{.Key}}</td>
+          <td class="bar"><div style="width:{{.SharePct}}%"></div></td>
+          <td class="num pct">{{.ShareText}}</td>
+          <td class="num">{{.Spend}}</td>
+          <td class="num muted">{{.Requests}} req{{if .Unresolved}} · {{.Unresolved}} unresolved{{end}}{{if .HasHold}} · {{.Reserved}} held{{end}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    <p class="muted">{{.Total}}{{if not .Complete}} — a floor{{end}} across {{.Requests}} request(s)</p>
+  </div>
+  {{end}}
+  {{end}}
+</section>
+<p class="subtitle wide">Access provider, model publisher, and model are three independent
+  fields. A Claude request through Bedrock is <code>aws-bedrock</code> /
+  <code>anthropic</code> / <code>claude-…</code>, and collapsing them would make all three
+  questions unanswerable. A model the catalog does not recognize appears under its exact
+  provider model ID rather than in an "unknown" bucket.</p>
+{{end}}
+
+</main>
+{{end}}
+
+<footer>
+  <span>throttle{{if .Version}} {{.Version}}{{end}}</span>
+  <span class="muted">local read-only dashboard · no authentication · the ledger is the
+    monetary record; request history is attribution</span>
+</footer>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}
+
+{{/* events renders the request table from a slice of EventView. One definition, used by
+     the activity panel and the reconciliation panel, so the completeness rules cannot
+     diverge between them. */}}
+{{define "events"}}
+<table class="events">
+  <thead><tr>
+    <th>Time</th><th>Budget</th><th>Operation</th>
+    <th>Access provider</th><th>Publisher</th><th>Model</th>
+    <th>Usage</th>
+    <th class="num">Estimated</th><th class="num">Reserved</th><th class="num">Actual</th>
+    <th>Mode</th><th class="num">Latency</th><th>Status</th>
+  </tr></thead>
+  <tbody>
+  {{range .}}
+    <tr class="status-{{.Status}}">
+      <td><a href="/request/{{.RequestID}}" title="{{.TimeFull}}">{{.Time}}</a></td>
+      <td title="{{.Scopes}}">{{.BudgetID}}</td>
+      <td>{{.Operation}}</td>
+      <td>{{.AccessProvider}}</td>
+      <td>{{.Publisher}}</td>
+      <td class="{{if not .ModelKnown}}unmapped{{end}}" title="{{.ProviderModelID}}">{{.Model}}</td>
+      <td class="usage" title="{{.UsageTitle}}">{{.Usage}}</td>
+      <td class="num muted">{{.Estimated}}</td>
+      <td class="num held">{{.Reserved}}</td>
+      <td class="num cost cost-{{.ActualState}}" title="{{.ActualTitle}}">{{.Actual}}{{if .HasOverrun}}
+        <span class="flag" title="the actual cost exceeded the reservation">+{{.Overrun}} over</span>{{end}}</td>
+      <td class="mode mode-{{.Mode}}">{{.Mode}}</td>
+      <td class="num">{{.Latency}}</td>
+      <td>{{.Outcome}}
+        {{range .Flags}}<span class="badge">{{.}}</span>{{end}}
+        {{if .Error}}<span class="flag" title="{{.Error}}">error</span>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

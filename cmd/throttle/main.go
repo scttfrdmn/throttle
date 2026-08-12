@@ -54,6 +54,8 @@ func main() {
 		err = recoverCmd(os.Args[2:])
 	case "reconcile":
 		err = reconcileCmd(os.Args[2:])
+	case "serve":
+		err = serveCmd(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -78,6 +80,7 @@ commands:
   advance   perform due period transitions
   recover   reclaim expired reservations left by crashed processes
   reconcile repair bookkeeping a crashed process left half-finished
+  serve     run the local read-only dashboard on 127.0.0.1
   version   print the version
 
 run "throttle <command> -h" for command flags`)
