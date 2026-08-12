@@ -159,10 +159,19 @@ gauge describe how it ran rather than how anything is running now.</p>
          data-field="elapsed-pct"></div></div>
     <span data-field="period-end">{{.Position.PeriodEnd}}</span>
   </div>
+  <!-- Before the envelope begins there is no elapsed time to report, and "none elapsed"
+       beside a remaining figure reads as a period that is running and has had nothing
+       spent in it. What a reader wants to know is when it starts. -->
   <p class="muted">
+    {{if .Position.NotStarted}}
+    period is <strong data-field="period-state">{{.Position.PeriodState}}</strong> · starts
+    <span data-field="period-starts">{{.Position.PeriodStart}}</span> · runs
+    <span data-field="time-remaining-2">{{.Position.TimeRemaining}}</span>
+    {{else}}
     <span data-field="elapsed">{{.Position.Elapsed}}</span> elapsed,
     <span data-field="time-remaining-2">{{.Position.TimeRemaining}}</span> remaining
-    · period is {{.Position.PeriodState}}{{if .Position.Provisional}}, carry provisional{{end}}
+    · period is <span data-field="period-state">{{.Position.PeriodState}}</span>{{if .Position.Provisional}}, carry provisional{{end}}
+    {{end}}
   </p>
 
   <div class="figures">

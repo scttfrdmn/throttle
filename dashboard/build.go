@@ -37,8 +37,10 @@ func buildPosition(pos report.Position, binding string, borrow time.Duration) Po
 		SpendableNow: usd(pos.SpendableNow),
 		PeriodStart:  dayStamp(pos.PeriodStart),
 		PeriodEnd:    dayStamp(pos.PeriodEnd),
-		PeriodState:  string(pos.Period.State),
+		PeriodState:  periodStateText(pos),
 		Provisional:  pos.Period.Provisional(),
+		Prospective:  pos.Prospective,
+		NotStarted:   pos.At.Before(pos.PeriodStart),
 
 		Elapsed:       duration(pos.Elapsed),
 		TimeRemaining: duration(pos.TimeRemaining),
@@ -191,15 +193,22 @@ func buildPeriodOptions(opts []report.PeriodOption, selected string) []PeriodOpt
 	out := make([]PeriodOption, 0, len(opts))
 	for _, o := range opts {
 		label := dayStamp(o.Start) + " → " + dayStamp(o.End)
-		if o.Current {
+		switch {
+		case o.Prospective:
+			// Not "(current)": no row exists, so nothing about it is running. The label
+			// says which, because a selector entry that looks materialized and is not
+			// would make the notice on the page look like a contradiction.
+			label += " (not recorded yet)"
+		case o.Current:
 			label += " (current)"
 		}
 		out = append(out, PeriodOption{
-			PeriodID: o.PeriodID,
-			Label:    label,
-			Current:  o.Current,
-			Selected: o.PeriodID == selected,
-			State:    string(o.State),
+			PeriodID:    o.PeriodID,
+			Label:       label,
+			Current:     o.Current,
+			Selected:    o.PeriodID == selected,
+			State:       string(o.State),
+			Prospective: o.Prospective,
 		})
 	}
 	return out
@@ -650,6 +659,19 @@ func notices(sum report.Summary, tl report.Timeline, at time.Time) []Notice {
 			"final position, and the gauge has no reading because there is no remaining time."})
 	}
 
+	// A prospective envelope is described so that $0.00 spent is not read as a
+	// measurement of a workload that has not had the chance to run. The wording is
+	// careful about which store says what: the envelope comes from the definition, the
+	// zeros are the ledger's own answer for a period nothing has been charged to, and
+	// looking at this page did not create anything.
+	if pos.Prospective {
+		out = append(out, Notice{Level: "info", Text: "this budget has no period recorded in the " +
+			"ledger yet, so the envelope below is the one its definition describes. A period is " +
+			"written the first time something spends against the budget. Spent and reserved are " +
+			"the ledger's own figures for that period: nothing has been charged to it. Looking at " +
+			"this page did not create it."})
+	}
+
 	if pos.Period.Provisional() {
 		out = append(out, Notice{Level: "info", Text: "the carry into this period is provisional: " +
 			"the preceding period is still draining and may release money, which can only raise it."})
@@ -703,6 +725,13 @@ type summaryJSON struct {
 	Elapsed       string `json:"elapsed"`
 	TimeRemaining string `json:"time_remaining"`
 	ElapsedPct    string `json:"elapsed_pct"`
+
+	// PeriodState is the lifecycle position in words, and Prospective reports that the
+	// ledger holds no row for this envelope. A poll refreshes the state because the
+	// first charge against a prospective envelope materializes it, and the page must
+	// stop saying it has not been recorded.
+	PeriodState string `json:"period_state"`
+	Prospective bool   `json:"prospective"`
 
 	AverageBurn     string `json:"average_burn_to_date"`
 	SustainableBurn string `json:"sustainable_burn"`
@@ -767,6 +796,9 @@ func buildSummaryJSON(sum report.Summary, page Page) summaryJSON {
 		Elapsed:       duration(pos.Elapsed),
 		TimeRemaining: duration(pos.TimeRemaining),
 		ElapsedPct:    page.Position.ElapsedPct,
+
+		PeriodState: periodStateText(pos),
+		Prospective: pos.Prospective,
 
 		AverageBurn:     rate(pos.AverageBurn),
 		SustainableBurn: rate(pos.SustainableBurn),

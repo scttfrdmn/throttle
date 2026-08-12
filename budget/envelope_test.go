@@ -205,6 +205,36 @@ func TestSustainableRateAfterPeriodEnd(t *testing.T) {
 	}
 }
 
+// TestSustainableRateBeforePeriodStart pins the clamp at the lower boundary.
+//
+// An envelope defined in advance is read before it begins -- that is the ordinary state
+// of a budget somebody set up for next quarter. Measuring from the reading instant to the
+// end would count the wait as period time: a 30-day envelope read a week early would
+// report 37 days remaining and a sustainable rate 19% below what the period really
+// sustains, and the figure would drift as the start approached.
+func TestSustainableRateBeforePeriodStart(t *testing.T) {
+	e := testEnvelope()
+	full := e.Snapshot(e.Start, 0, 0)
+
+	for _, early := range []time.Duration{time.Nanosecond, time.Hour, 7 * 24 * time.Hour} {
+		at := e.Start.Add(-early)
+		s := e.Snapshot(at, 0, 0)
+
+		if s.TimeRemaining != e.Duration() {
+			t.Errorf("%v early: TimeRemaining = %v, want the whole %v", early, s.TimeRemaining, e.Duration())
+		}
+		if got := e.Elapsed(at) + s.TimeRemaining; got != e.Duration() {
+			t.Errorf("%v early: elapsed+remaining = %v, want the whole %v", early, got, e.Duration())
+		}
+		// The rate is what the period sustains, and does not depend on how early the
+		// reading happened to be taken.
+		if s.SustainableRate != full.SustainableRate {
+			t.Errorf("%v early: SustainableRate = %s, want the at-start %s",
+				early, s.SustainableRate, full.SustainableRate)
+		}
+	}
+}
+
 func TestReservationsConsumeHeadroom(t *testing.T) {
 	e := testEnvelope()
 	at := e.Start.Add(15 * 24 * time.Hour)

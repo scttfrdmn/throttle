@@ -167,9 +167,23 @@ type Position struct {
 	// At is the instant every figure below was computed for.
 	At time.Time
 
-	// Period is the materialized period the position is measured in, including its
-	// lifecycle state and whether its carry is still provisional.
+	// Period is the period the position is measured in, including its lifecycle
+	// state and whether its carry is still provisional.
 	Period ledger.Period
+
+	// Prospective reports that Period is not materialized: it is the envelope the
+	// durable definition describes, computed from the definition alone, for a budget
+	// the ledger has never written a period row for.
+	//
+	// This is the ordinary state of a budget defined in advance of its start date, or
+	// of one nobody has spent against yet. The monetary figures are still the
+	// ledger's own -- Totals against a period id with no legs is zero, not a guess --
+	// and every elapsed-time figure is clamped by budget.Envelope, so a future
+	// envelope reports no elapsed time rather than a negative one.
+	//
+	// A display must say so. "Spent $0.00" in an envelope that has not begun is true
+	// and reads as a measurement of activity that has not had the chance to happen.
+	Prospective bool
 
 	Allocation money.Money
 

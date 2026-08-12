@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -729,6 +730,152 @@ func TestPeriodsAreNotMonthlySpecific(t *testing.T) {
 	if got := figure(t, body, "period-end"); !strings.HasPrefix(got, "2026-08-08") {
 		t.Errorf("period end = %q, want the grant's own end, not a month boundary", got)
 	}
+}
+
+// A valid budget defined for a future term must not look broken.
+//
+// Nothing has begun and nothing has been recorded, so there is no period row -- and that
+// used to 404 the whole dashboard, which made a correctly configured grant read as a
+// missing one. What the page owes a reader here is the durable definition's own facts:
+// what it is, that it has not started, when it starts, and how much it holds.
+func TestFutureBudgetWithNoPeriodRendersRatherThan404(t *testing.T) {
+	w := newWorld(t)
+	def := monthly("grant", "", dollars(125_000))
+	def.Name = "Research grant"
+	def.AnchorAt = base.AddDate(0, 1, 0) // starts a month after the clock
+	if err := w.led.PutDefinition(w.ctx, def); err != nil {
+		t.Fatalf("PutDefinition: %v", err)
+	}
+
+	// Every surface a reader reaches, including the bare root: a future budget is the only
+	// budget here, so "/" selects it.
+	for _, path := range []string{
+		"/", "/?budget=grant", "/?budget=grant&period=grant@0",
+		"/api/summary?budget=grant", "/api/timeline?budget=grant",
+	} {
+		if rec := w.get(path); rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200: a future budget is defined, not missing\n%s",
+				path, rec.Code, rec.Body.String())
+		}
+	}
+
+	body := w.html("/?budget=grant")
+
+	// Research grant / Not started / Starts 2026-09-01 / Allocation $125,000.
+	mustContain(t, body, "Research grant", "the budget's own name must appear")
+	if got := figure(t, body, "period-state"); got != "not started" {
+		t.Errorf("period state = %q, want %q", got, "not started")
+	}
+	if got := figure(t, body, "period-starts"); !strings.HasPrefix(got, "2026-09-01") {
+		t.Errorf("start date = %q, want the definition's anchor", got)
+	}
+	if got := figure(t, body, "allocation"); got != "$125,000.00" {
+		t.Errorf("allocation = %q, want $125,000.00", got)
+	}
+
+	// Zero spend and zero reserved are the ledger's own answer for a period nothing has
+	// been charged to, and the page says so rather than leaving $0.00 to be read as a
+	// measurement of a workload that has not had the chance to run.
+	if got := figure(t, body, "spent"); got != "$0.00" {
+		t.Errorf("spent = %q, want $0.00", got)
+	}
+	if got := figure(t, body, "reserved"); got != "$0.00" {
+		t.Errorf("reserved = %q, want $0.00", got)
+	}
+	mustSay(t, body, "this budget has no period recorded in the ledger yet",
+		"a prospective envelope must be announced as one")
+	mustSay(t, body, "Looking at this page did not create it.",
+		"the page must say that reading it wrote nothing")
+	mustSay(t, body, "this period has not started yet",
+		"a future period must be announced")
+
+	// No elapsed-time metric may be invented before the envelope begins.
+	if got := figure(t, body, "pressure"); got != "no reading" {
+		t.Errorf("burn pressure = %q, want %q", got, "no reading")
+	}
+	if got := figure(t, body, "average-burn"); got != "—" {
+		t.Errorf("average burn = %q, want an em dash, not a rate", got)
+	}
+	if got := figure(t, body, "projection"); got != "—" {
+		t.Errorf("projection = %q, want an em dash", got)
+	}
+	if got := figure(t, body, "target"); got != "$0.00" {
+		t.Errorf("target by now = %q, want $0.00 by the established math", got)
+	}
+	// "ON PACE" would be a reading of a pace that does not exist yet.
+	if got := figure(t, body, "bank-label"); got != "NOT STARTED" {
+		t.Errorf("pace balance label = %q, want %q", got, "NOT STARTED")
+	}
+	mustNotContain(t, body, "elapsed,",
+		"a period that has not begun has no elapsed time to report beside a remaining one")
+
+	// The sustainable rate spreads the allocation over the envelope's own span, not over
+	// the wider gap between an early reading and the end: $125,000 across 30 days.
+	if got := figure(t, body, "sustainable-burn"); got != "$4,166.67/day" {
+		t.Errorf("sustainable burn = %q, want $4,166.67/day: the allocation over the "+
+			"envelope's own duration", got)
+	}
+
+	// And the budget stays navigable: it is offered in the selector, marked for what it is.
+	mustContain(t, body, "(not recorded yet)",
+		"the period selector must say the envelope is not a materialized period")
+	mustNotContain(t, body, "(current)",
+		"nothing is running, so no period may be labelled current")
+}
+
+// The dashboard is read-only, and describing a future envelope must not be the exception.
+// A page load that materialized a period would have the browser writing to a ledger it is
+// not spending from -- and would create durable rows for a budget nobody has used.
+func TestReadingAFutureBudgetPageCreatesNoPeriodRow(t *testing.T) {
+	w := newWorld(t)
+	def := monthly("grant", "", dollars(125_000))
+	def.AnchorAt = base.AddDate(0, 1, 0)
+	if err := w.led.PutDefinition(w.ctx, def); err != nil {
+		t.Fatalf("PutDefinition: %v", err)
+	}
+
+	for _, path := range []string{
+		"/", "/?budget=grant", "/?budget=grant&period=grant@0",
+		"/api/summary?budget=grant", "/api/summary?budget=grant&period=grant@0",
+		"/api/timeline?budget=grant", "/api/timeline?budget=grant&period=grant@0",
+		"/api/activity?budget=grant", "/api/holds?budget=grant",
+	} {
+		w.get(path)
+	}
+
+	after, err := w.led.Periods(w.ctx, "grant")
+	if err != nil {
+		t.Fatalf("Periods: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("reading the dashboard materialized %d period rows for a future budget: %+v",
+			len(after), after)
+	}
+}
+
+// A monthly budget nobody has spent against yet is prospective but started, which is a
+// different sentence from a budget whose term is in the future. Both render; neither
+// claims the other's facts.
+func TestStartedButUnusedBudgetIsProspectiveNotNotStarted(t *testing.T) {
+	w := newWorld(t)
+	if err := w.led.PutDefinition(w.ctx, monthly("research", "", dollars(1000))); err != nil {
+		t.Fatalf("PutDefinition: %v", err)
+	}
+
+	body := w.html("/?budget=research")
+	if got := figure(t, body, "period-state"); got != "not yet materialized" {
+		t.Errorf("period state = %q, want %q: the envelope is running, the row is not written",
+			got, "not yet materialized")
+	}
+	// Time really has elapsed in this envelope with nothing spent in it, which is the one
+	// legitimate zero reading.
+	if got := figure(t, body, "pressure"); got != "0.00%" {
+		t.Errorf("pressure = %q, want 0.00%%: time elapsed and nothing was spent", got)
+	}
+	mustSay(t, body, "this budget has no period recorded in the ledger yet",
+		"an unmaterialized envelope must be announced")
+	mustNotContain(t, body, "this period has not started yet",
+		"an envelope that is running must not be described as not started")
 }
 
 // A prior period is readable, and is marked as prior rather than presented as a live

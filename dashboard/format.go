@@ -241,6 +241,22 @@ func percent(bp int64) string {
 	return s
 }
 
+// periodStateText is the period's lifecycle position in words.
+//
+// A prospective envelope has no row and therefore no state, and printing an empty
+// string would read as a rendering fault. It says what is true instead: the definition
+// describes this envelope and the ledger has not written it yet, which happens for
+// every budget until something first spends against it.
+func periodStateText(pos report.Position) string {
+	if pos.Prospective {
+		if pos.At.Before(pos.PeriodStart) {
+			return "not started"
+		}
+		return "not yet materialized"
+	}
+	return string(pos.Period.State)
+}
+
 // pressureText is the gauge's reading in words, which is the only form four of its
 // five states have.
 func pressureText(p report.Pressure) string {

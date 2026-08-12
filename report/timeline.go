@@ -2,6 +2,7 @@ package report
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 
@@ -93,22 +94,29 @@ const DefaultTimelineCharges = 2000
 // building it from activity records would be recomputing money from telemetry for the
 // convenience of a chart, which is precisely the thing this package does not do.
 func (r *Reporter) Timeline(ctx context.Context, budgetID, periodID string) (Timeline, error) {
-	var (
-		p   ledger.Period
-		err error
-	)
+	def, _, err := r.led.Definition(ctx, budgetID)
+	if err != nil {
+		return Timeline{}, err
+	}
+
+	// A period the definition describes but the ledger has not materialized is drawn as
+	// the envelope it is: the pacing curves come from the definition's own math, and the
+	// actual line is empty because nothing has been charged. That is a chart of a budget
+	// that has not started, which is a different picture from an error page.
+	var p ledger.Period
 	if periodID != "" {
-		if p, err = r.led.Period(ctx, periodID); err != nil {
-			return Timeline{}, err
+		p, err = r.led.Period(ctx, periodID)
+		if errors.Is(err, ledger.ErrNoSuchPeriodRow) {
+			p, err = prospectivePeriodByID(def, r.clock(), periodID)
 		}
 	} else {
-		def, _, derr := r.led.Definition(ctx, budgetID)
-		if derr != nil {
-			return Timeline{}, derr
+		p, err = r.periodContaining(ctx, def, r.clock())
+		if errors.Is(err, ledger.ErrNoSuchPeriodRow) {
+			p, err = prospectivePeriod(def, r.clock())
 		}
-		if p, err = r.periodContaining(ctx, def, r.clock()); err != nil {
-			return Timeline{}, err
-		}
+	}
+	if err != nil {
+		return Timeline{}, err
 	}
 
 	env := p.Envelope

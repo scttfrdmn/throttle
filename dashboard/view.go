@@ -108,6 +108,10 @@ type PeriodOption struct {
 	Current  bool
 	Selected bool
 	State    string
+
+	// Prospective reports an envelope the definition describes and the ledger has not
+	// recorded.
+	Prospective bool
 }
 
 // PositionView is the budget summary panel: the full accounting vocabulary, with no
@@ -141,8 +145,19 @@ type PositionView struct {
 
 	PeriodStart string
 	PeriodEnd   string
+
+	// PeriodState is the period's lifecycle position in words. A prospective envelope
+	// has no lifecycle position, so it says what it is instead of printing an empty
+	// state.
 	PeriodState string
 	Provisional bool
+
+	// Prospective reports that the ledger holds no period row for this envelope, and
+	// NotStarted that the envelope's own start date is still in the future. They are
+	// separate: a monthly budget nobody has spent against yet is prospective and
+	// started.
+	Prospective bool
+	NotStarted  bool
 
 	Elapsed       string
 	TimeRemaining string
@@ -215,11 +230,17 @@ type BankView struct {
 
 	// Banked and Borrowed are mutually exclusive, and Zero is its own state: exactly
 	// on pace is a real answer, not a missing one.
-	Banked   bool
-	Borrowed bool
-	Zero     bool
+	//
+	// NotStarted is a fourth state, and separate from Zero for the same reason: before
+	// an envelope begins the balance is arithmetically zero, but there is no pace to be
+	// on yet, and "ON PACE" would report a measurement of something that has not had
+	// the chance to happen.
+	Banked     bool
+	Borrowed   bool
+	Zero       bool
+	NotStarted bool
 
-	// Label is BANKED, BORROWED, or ON PACE.
+	// Label is BANKED, BORROWED, ON PACE, or NOT STARTED.
 	Label string
 
 	// FillPct is the bar's extent from the centre, as a percentage of the half-width.
@@ -759,6 +780,13 @@ func bankView(pos report.Position) BankView {
 			"they answer different questions.",
 	}
 	switch {
+	case pos.At.Before(pos.PeriodStart):
+		// Nothing has elapsed, so there is no pace and nothing has deviated from it.
+		// The bar stays at the centre because the balance really is zero; the label is
+		// what stops the zero being read as a measurement.
+		b.NotStarted, b.Label = true, "NOT STARTED"
+		b.Explain = "there is no pace balance yet: the period has not begun, so there is " +
+			"no target to have banked against or borrowed from."
 	case pos.PaceBalance > 0:
 		b.Banked, b.Label = true, "BANKED"
 	case pos.PaceBalance < 0:

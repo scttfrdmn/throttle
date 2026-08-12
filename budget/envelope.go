@@ -237,11 +237,23 @@ type Snapshot struct {
 	// rather than hidden.
 	PeriodRemaining money.Money
 
+	// TimeRemaining is the envelope time left at At, clamped to [0, Duration] so
+	// that Elapsed(At)+TimeRemaining is always the whole period.
+	//
+	// The clamp at the lower boundary is the mirror of the one Elapsed applies at
+	// the upper one, and it matters before the envelope begins: measuring from At
+	// to End would count the gap before the start as period time, reporting 45
+	// days left in a 31-day month and spreading the allocation across a window the
+	// envelope does not cover.
 	TimeRemaining time.Duration
 
 	// SustainableRate is the spend-per-hour that exactly consumes
 	// PeriodRemaining over TimeRemaining. Zero once the period is over or the
 	// envelope is exhausted.
+	//
+	// Before the envelope begins this is the rate that consumes it over its own
+	// full span, which is the rate the whole period sustains -- not a rate diluted
+	// by however early somebody happened to look.
 	SustainableRate money.Money
 }
 
@@ -274,12 +286,9 @@ func (e Envelope) Snapshot(at time.Time, spent, reserved money.Money) Snapshot {
 		bank = money.Min
 	}
 
-	timeRemaining := time.Duration(0)
-	if at.Before(e.End) {
-		timeRemaining = e.End.Sub(at)
-		if timeRemaining < 0 { // Sub saturated on an extreme timestamp.
-			timeRemaining = 0
-		}
+	timeRemaining := e.Duration() - e.Elapsed(at)
+	if timeRemaining < 0 { // Sub saturated on an extreme timestamp.
+		timeRemaining = 0
 	}
 
 	return Snapshot{

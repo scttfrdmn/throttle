@@ -89,8 +89,10 @@ func TestBudgetWithNoActivityRendersZeroSpendHonestly(t *testing.T) {
 	}
 }
 
-// A budget defined but with no materialized period is normal on a fresh ledger. The
-// tree shows the budget and records why its position is missing.
+// A budget defined but with no materialized period is normal on a fresh ledger: a
+// definition is durable and a period row is written the first time something spends.
+// The tree shows the envelope the definition describes, marked prospective, rather than
+// recording an error against a budget that is perfectly well defined.
 func TestTreeShowsABudgetWithNoMaterializedPeriod(t *testing.T) {
 	w := newWorld(t)
 	if err := w.led.PutDefinition(w.ctx, monthly("research", "", dollars(1000))); err != nil {
@@ -104,11 +106,147 @@ func TestTreeShowsABudgetWithNoMaterializedPeriod(t *testing.T) {
 	if len(tree.Roots) != 1 {
 		t.Fatalf("got %d roots, want the budget shown despite having no period", len(tree.Roots))
 	}
-	if tree.Roots[0].Position.BudgetID != "research" {
-		t.Errorf("BudgetID = %q", tree.Roots[0].Position.BudgetID)
+	pos := tree.Roots[0].Position
+	if pos.BudgetID != "research" {
+		t.Errorf("BudgetID = %q", pos.BudgetID)
 	}
-	if tree.Errors["research"] == "" {
-		t.Error("Errors has no entry explaining the missing period")
+	if tree.Errors["research"] != "" {
+		t.Errorf("Errors[research] = %q, want no error: the definition describes its envelope",
+			tree.Errors["research"])
+	}
+	if !pos.Prospective {
+		t.Error("Prospective = false; the ledger holds no period row for this budget")
+	}
+	// The envelope is the definition's own, and the period id is the one the ledger will
+	// use when it does materialize, so nothing a reader saw gets renamed later.
+	if pos.Period.ID != "research@0" {
+		t.Errorf("Period.ID = %q, want research@0", pos.Period.ID)
+	}
+	if !pos.PeriodStart.Equal(base) {
+		t.Errorf("PeriodStart = %s, want %s", pos.PeriodStart, base)
+	}
+	if pos.Allocation != dollars(1000) {
+		t.Errorf("Allocation = %s, want the defined %s", pos.Allocation, dollars(1000))
+	}
+	// The money is the ledger's own answer for a period nothing has been charged to.
+	if pos.Spent != 0 || pos.Reserved != 0 {
+		t.Errorf("Spent/Reserved = %s/%s, want zero", pos.Spent, pos.Reserved)
+	}
+	if pos.CarryIn != 0 {
+		t.Errorf("CarryIn = %s; there is no predecessor to carry from", pos.CarryIn)
+	}
+}
+
+// A budget whose term has not begun must not look broken. It is a valid durable
+// definition; the only truthful thing to say is when it starts and how much it holds.
+func TestSummaryOfABudgetThatHasNotStarted(t *testing.T) {
+	w := newWorld(t)
+	start := base.AddDate(0, 1, 0)
+	def := monthly("grant", "", dollars(125_000))
+	def.AnchorAt = start
+	if err := w.led.PutDefinition(w.ctx, def); err != nil {
+		t.Fatalf("PutDefinition: %v", err)
+	}
+
+	sum, err := w.rep.Summary(w.ctx, "grant")
+	if err != nil {
+		t.Fatalf("Summary of a future budget must not fail: %v", err)
+	}
+	pos := sum.Position
+	if !pos.Prospective {
+		t.Error("Prospective = false on a budget with no period row")
+	}
+	// The envelope shown is the first one the definition generates, which is also the one
+	// whose start date answers "when does this begin?".
+	if !pos.PeriodStart.Equal(start) {
+		t.Errorf("PeriodStart = %s, want the anchor %s", pos.PeriodStart, start)
+	}
+	if pos.Allocation != dollars(125_000) {
+		t.Errorf("Allocation = %s, want %s", pos.Allocation, dollars(125_000))
+	}
+	if pos.Spent != 0 {
+		t.Errorf("Spent = %s, want the ledger's zero", pos.Spent)
+	}
+
+	// No elapsed-time metric may be invented before an envelope begins.
+	if pos.Elapsed != 0 {
+		t.Errorf("Elapsed = %s before the period starts", pos.Elapsed)
+	}
+	if pos.Pressure.State != PressureNotStarted {
+		t.Errorf("Pressure.State = %q, want %q", pos.Pressure.State, PressureNotStarted)
+	}
+	if pos.AverageBurn.Known {
+		t.Errorf("AverageBurn = %+v, want unknown: no time has elapsed", pos.AverageBurn)
+	}
+	if pos.Projection.Known {
+		t.Errorf("Projection = %+v, want unknown: nothing to extrapolate from", pos.Projection)
+	}
+	if pos.Projection.Confidence != ConfidenceNone {
+		t.Errorf("Projection.Confidence = %v, want none", pos.Projection.Confidence)
+	}
+	// The target curve at an instant before the start is zero by the established math,
+	// not by a special case here.
+	if pos.TargetByNow != 0 {
+		t.Errorf("TargetByNow = %s, want zero before the period begins", pos.TargetByNow)
+	}
+}
+
+// The period selector must offer the prospective envelope, and selecting it must
+// resolve rather than 404 the page it was offered on.
+func TestPeriodsOffersTheProspectiveEnvelope(t *testing.T) {
+	w := newWorld(t)
+	start := base.AddDate(0, 1, 0)
+	def := monthly("grant", "", dollars(125_000))
+	def.AnchorAt = start
+	if err := w.led.PutDefinition(w.ctx, def); err != nil {
+		t.Fatalf("PutDefinition: %v", err)
+	}
+
+	opts, err := w.rep.Periods(w.ctx, "grant")
+	if err != nil {
+		t.Fatalf("Periods: %v", err)
+	}
+	if len(opts) != 1 {
+		t.Fatalf("got %d options, want the one envelope the definition describes", len(opts))
+	}
+	if !opts[0].Prospective {
+		t.Error("the offered option is not marked prospective")
+	}
+	if opts[0].PeriodID != "grant@0" {
+		t.Errorf("PeriodID = %q, want grant@0", opts[0].PeriodID)
+	}
+
+	// Choosing it works, on every read a page performs with an explicit period.
+	pos, err := w.rep.PositionIn(w.ctx, "grant", opts[0].PeriodID)
+	if err != nil {
+		t.Fatalf("PositionIn(%q): %v", opts[0].PeriodID, err)
+	}
+	if !pos.Prospective || pos.Allocation != dollars(125_000) {
+		t.Errorf("PositionIn = %+v, want the prospective envelope", pos)
+	}
+	tl, err := w.rep.Timeline(w.ctx, "grant", opts[0].PeriodID)
+	if err != nil {
+		t.Fatalf("Timeline(%q): %v", opts[0].PeriodID, err)
+	}
+	if !tl.Start.Equal(start) || tl.Charges != 0 {
+		t.Errorf("Timeline = start %s, %d charges; want the future envelope and no charges",
+			tl.Start, tl.Charges)
+	}
+}
+
+// An arbitrary sequence number must not conjure an envelope. A recurring definition
+// generates envelopes indefinitely, and a URL that resolved any of them would draw a
+// chart of a budget period in 2034 that nothing will ever be spent against.
+func TestAnArbitraryFuturePeriodIDIsStillNotFound(t *testing.T) {
+	w := newWorld(t)
+	if err := w.led.PutDefinition(w.ctx, monthly("research", "", dollars(1000))); err != nil {
+		t.Fatalf("PutDefinition: %v", err)
+	}
+	if _, err := w.rep.PositionIn(w.ctx, "research", "research@99"); !NotFound(err) {
+		t.Errorf("PositionIn(research@99) error = %v, want a not-found", err)
+	}
+	if _, err := w.rep.Timeline(w.ctx, "research", "research@99"); !NotFound(err) {
+		t.Errorf("Timeline(research@99) error = %v, want a not-found", err)
 	}
 }
 
@@ -142,6 +280,39 @@ func TestReadingADashboardDoesNotMaterializePeriods(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Errorf("a read materialized %d period rows", len(after))
+	}
+}
+
+// Describing a future budget's envelope is arithmetic on the definition, not a write.
+// The prospective path is the one most likely to be tempted into materializing a period
+// -- it is the only read that has to name a period the ledger has never seen -- so it
+// gets its own guarantee.
+func TestReadingAFutureBudgetDoesNotMaterializePeriods(t *testing.T) {
+	w := newWorld(t)
+	def := monthly("grant", "", dollars(125_000))
+	def.AnchorAt = base.AddDate(0, 1, 0)
+	if err := w.led.PutDefinition(w.ctx, def); err != nil {
+		t.Fatalf("PutDefinition: %v", err)
+	}
+
+	// Every read a dashboard page performs, including the explicit-period forms a reader
+	// reaches by choosing the prospective entry out of the period selector.
+	_, _ = w.rep.Tree(w.ctx)
+	_, _ = w.rep.Summary(w.ctx, "grant")
+	_, _ = w.rep.Periods(w.ctx, "grant")
+	_, _ = w.rep.PositionIn(w.ctx, "grant", def.PeriodID(0))
+	_, _ = w.rep.Timeline(w.ctx, "grant", "")
+	_, _ = w.rep.Timeline(w.ctx, "grant", def.PeriodID(0))
+	_ = w.rep.Bookkeeping(w.ctx, "grant", def.PeriodID(0))
+	_, _ = w.rep.Activity(w.ctx, ActivityQuery{BudgetID: "grant"})
+	_, _ = w.rep.Reservations(w.ctx, "grant", 0)
+
+	after, err := w.led.Periods(w.ctx, "grant")
+	if err != nil {
+		t.Fatalf("Periods: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("reading a future budget materialized %d period rows", len(after))
 	}
 }
 

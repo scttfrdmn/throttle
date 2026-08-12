@@ -46,6 +46,7 @@
     period_end: "period-end",
     elapsed: "elapsed",
     time_remaining: ["time-remaining", "time-remaining-2"],
+    period_state: "period-state",
     average_burn_to_date: "average-burn",
     sustainable_burn: "sustainable-burn",
     burn_pressure: "pressure",
@@ -64,6 +65,7 @@
     return [
       d.empty ? "empty" : "budget",
       d.period_id,
+      d.prospective,
       d.burn_pressure_state,
       d.activity_available,
       d.overspent,

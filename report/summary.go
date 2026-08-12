@@ -199,14 +199,114 @@ func (r *Reporter) positionOf(ctx context.Context, def budget.Definition, at tim
 	} else if err != nil {
 		p, err = r.periodContaining(ctx, def, at)
 	}
+
+	prospective := false
+	if errors.Is(err, ledger.ErrNoSuchPeriodRow) {
+		pp, perr := prospectivePeriod(def, at)
+		if perr != nil {
+			// Nothing computable to show. The original absence is returned rather than
+			// the arithmetic complaint, because "this budget has no period" is what a
+			// caller can act on and what NotFound already classifies.
+			return Position{}, err
+		}
+		p, err, prospective = pp, nil, true
+	}
 	if err != nil {
 		return Position{}, err
 	}
+
+	// The totals read happens either way, against the same period id the ledger will
+	// use once it does materialize. An unmaterialized period has no charge legs and no
+	// reservation legs, so the zeros are the ledger's own answer rather than a stand-in
+	// this package chose.
 	tot, err := r.led.Totals(ctx, ledger.Scope{BudgetID: def.ID, PeriodID: p.ID}, at)
 	if err != nil {
 		return Position{}, fmt.Errorf("report: totals for %q: %w", def.ID, err)
 	}
-	return position(def, p, tot, at), nil
+	pos := position(def, p, tot, at)
+	pos.Prospective = prospective
+	return pos, nil
+}
+
+// prospectivePeriod describes the envelope a definition says exists, for a budget the
+// ledger has never materialized a period for.
+//
+// A definition is durable and a period row is not: a period is created the first time
+// something reserves or settles against the budget. So a budget defined in advance --
+// a grant that starts next month, a monthly budget nobody has used yet -- has a fully
+// specified envelope and no row describing it. Reporting that as "not found" told the
+// owner of a perfectly good budget that it was broken, when the only thing missing was
+// a request.
+//
+// Everything here comes from budget.Definition, which is pure: bounds, allocation,
+// borrow window, and rollover policy are functions of the stored definition and the
+// clock. Nothing is written, and the period id is the one the ledger will use when the
+// budget is first spent against, so materializing later does not rename what a reader
+// was already looking at.
+//
+// The carry is zero, and that is a statement about the ledger rather than a prediction:
+// no period has closed, so no balance has been carried into anything. What a rollover
+// policy will eventually credit is computed by the ledger when it materializes the
+// chain; deriving it here would be this package inventing money.
+func prospectivePeriod(def budget.Definition, at time.Time) (ledger.Period, error) {
+	seq, err := def.PeriodFor(at)
+	if err != nil {
+		switch {
+		case at.Before(def.AnchorAt):
+			// The term has not begun. The envelope worth describing is the first one,
+			// which is also the one whose start date answers "when does this begin?".
+			seq = 0
+		case !def.EndAt.IsZero() && !at.Before(def.EndAt):
+			// The term is over and was never used. The last envelope the definition
+			// generated is the one a reader is looking for.
+			seq, err = def.PeriodFor(def.EndAt.Add(-time.Nanosecond))
+			if err != nil {
+				return ledger.Period{}, err
+			}
+		default:
+			return ledger.Period{}, err
+		}
+	}
+	return prospectiveAt(def, seq)
+}
+
+// prospectivePeriodByID describes a named period the ledger has not materialized.
+//
+// Exactly one unmaterialized envelope is describable this way: the one prospectivePeriod
+// resolves for the current instant, which is the one the period selector offers. Any
+// other id is a not-found, and deliberately so -- a recurring definition generates
+// envelopes indefinitely, so resolving an arbitrary sequence number would let a URL
+// conjure a chart of a budget period in 2034 that nothing will ever be spent against.
+func prospectivePeriodByID(def budget.Definition, at time.Time, periodID string) (ledger.Period, error) {
+	p, err := prospectivePeriod(def, at)
+	if err != nil || p.ID != periodID {
+		return ledger.Period{}, fmt.Errorf("%w: %q", ledger.ErrNoSuchPeriodRow, periodID)
+	}
+	return p, nil
+}
+
+// prospectiveAt materializes nothing: it builds the in-memory period a sequence number
+// of a definition describes.
+func prospectiveAt(def budget.Definition, seq int) (ledger.Period, error) {
+	env, err := def.Envelope(seq, 0)
+	if err != nil {
+		return ledger.Period{}, err
+	}
+	return ledger.Period{
+		ID:       env.ID,
+		BudgetID: def.ID,
+		Seq:      seq,
+		Envelope: env,
+
+		// State is deliberately left empty. A period that does not exist has no
+		// lifecycle position, and claiming "open" would assert that the ledger is
+		// accepting reservations against a row it has not written.
+		//
+		// CarryFinal is true because zero carry is what the ledger actually holds. A
+		// provisional carry means a predecessor is still draining and may release
+		// money; there is no predecessor here.
+		CarryFinal: true,
+	}, nil
 }
 
 // periodContaining finds the materialized period holding at, without materializing
@@ -222,6 +322,10 @@ func (r *Reporter) positionOf(ctx context.Context, def budget.Definition, at tim
 // dashboard can show the envelope and say where the clock is relative to it. Its
 // pacing figures are clamped by budget.Envelope.Elapsed, which is what makes a
 // future or expired period render honestly rather than as a divide-by-zero.
+//
+// When there is no materialized period at all, ErrNoSuchPeriodRow is returned and the
+// caller describes the prospective envelope instead, from the definition. That is
+// still not a write: see prospectivePeriod.
 func (r *Reporter) periodContaining(ctx context.Context, def budget.Definition, at time.Time) (ledger.Period, error) {
 	periods, err := r.led.Periods(ctx, def.ID)
 	if err != nil {
@@ -417,8 +521,11 @@ func (r *Reporter) Tree(ctx context.Context) (Tree, error) {
 	for _, def := range defs {
 		pos, err := r.positionOf(ctx, def, at)
 		if err != nil {
-			// A budget with no materialized period yet is normal on a fresh ledger.
-			// Record why and show the rest.
+			// A budget with no materialized period is not this case: positionOf
+			// describes its prospective envelope instead. What lands here is a budget
+			// whose position genuinely could not be read -- a failed query, or a
+			// definition whose recurrence generates no envelope at all. Record why and
+			// show the rest, because one unreadable budget must not blank the table.
 			t.Errors[def.ID] = err.Error()
 			pos = Position{BudgetID: def.ID, Name: def.Name, ParentID: def.ParentID, At: at}
 		}
@@ -448,25 +555,45 @@ func (r *Reporter) Tree(ctx context.Context) (Tree, error) {
 // Monthly is not special here: these are whatever envelopes the definition actually
 // generated, so a one-week demo budget, an academic grant, and a monthly recurrence
 // all list the same way.
+//
+// A budget with no materialized period lists the one prospective envelope its
+// definition describes, so the selector is not empty for a budget that is perfectly
+// well defined and simply has not been spent against.
 func (r *Reporter) Periods(ctx context.Context, budgetID string) ([]PeriodOption, error) {
 	periods, err := r.led.Periods(ctx, budgetID)
 	if err != nil {
 		return nil, err
 	}
 	at := r.clock()
+	if len(periods) == 0 {
+		def, _, err := r.led.Definition(ctx, budgetID)
+		if err != nil {
+			return nil, err
+		}
+		p, err := prospectivePeriod(def, at)
+		if err != nil {
+			// A definition that generates no envelope at all has nothing to select.
+			return nil, nil
+		}
+		return []PeriodOption{periodOption(p, at, true)}, nil
+	}
 	out := make([]PeriodOption, 0, len(periods))
 	for i := len(periods) - 1; i >= 0; i-- {
-		p := periods[i]
-		out = append(out, PeriodOption{
-			PeriodID: p.ID,
-			Seq:      p.Seq,
-			Start:    p.Envelope.Start,
-			End:      p.Envelope.End,
-			State:    p.State,
-			Current:  containsInstant(p, at),
-		})
+		out = append(out, periodOption(periods[i], at, false))
 	}
 	return out, nil
+}
+
+func periodOption(p ledger.Period, at time.Time, prospective bool) PeriodOption {
+	return PeriodOption{
+		PeriodID:    p.ID,
+		Seq:         p.Seq,
+		Start:       p.Envelope.Start,
+		End:         p.Envelope.End,
+		State:       p.State,
+		Current:     containsInstant(p, at),
+		Prospective: prospective,
+	}
 }
 
 // PeriodOption is one selectable period.
@@ -477,6 +604,11 @@ type PeriodOption struct {
 	End      time.Time
 	State    ledger.PeriodState
 	Current  bool
+
+	// Prospective reports an envelope the definition describes and the ledger has not
+	// materialized. State is empty for one, because a row that does not exist has no
+	// lifecycle position.
+	Prospective bool
 }
 
 // PositionIn reports a budget's position in a specific materialized period, for
@@ -486,17 +618,26 @@ type PeriodOption struct {
 // reads as fully elapsed and a future one as not started -- rather than reporting a
 // closed period's pacing as though it were still running.
 func (r *Reporter) PositionIn(ctx context.Context, budgetID, periodID string) (Position, error) {
+	def, _, err := r.led.Definition(ctx, budgetID)
+	if err != nil {
+		return Position{}, err
+	}
+
+	prospective := false
 	p, err := r.led.Period(ctx, periodID)
+	if errors.Is(err, ledger.ErrNoSuchPeriodRow) {
+		// A period the definition describes but the ledger has not written. This is the
+		// selector's own prospective entry being chosen, so it resolves rather than
+		// 404ing the page it was offered on.
+		p, err = prospectivePeriodByID(def, r.clock(), periodID)
+		prospective = err == nil
+	}
 	if err != nil {
 		return Position{}, err
 	}
 	if p.BudgetID != budgetID {
 		return Position{}, fmt.Errorf("%w: period %q belongs to budget %q, not %q",
 			ledger.ErrInvalidArgument, periodID, p.BudgetID, budgetID)
-	}
-	def, _, err := r.led.Definition(ctx, budgetID)
-	if err != nil {
-		return Position{}, err
 	}
 
 	at := r.clock()
@@ -510,7 +651,9 @@ func (r *Reporter) PositionIn(ctx context.Context, budgetID, periodID string) (P
 	if err != nil {
 		return Position{}, err
 	}
-	return position(def, p, tot, at), nil
+	pos := position(def, p, tot, at)
+	pos.Prospective = prospective
+	return pos, nil
 }
 
 // errNotConfigured wraps ErrNoActivity with the query that needed it.
