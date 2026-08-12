@@ -308,8 +308,13 @@ func TestConfigCheckReportsChangedDefinition(t *testing.T) {
 	if !strings.Contains(out, "$100.00") || !strings.Contains(out, "$500.00") {
 		t.Errorf("check does not show both values:\n%s", out)
 	}
-	if !strings.Contains(out, "will not rewrite") {
+	if !strings.Contains(out, "does not rewrite one") {
 		t.Errorf("check does not say that nothing was changed:\n%s", out)
+	}
+	// And it names the command that would: reporting a difference without a way to act on it
+	// leaves the reader stuck.
+	if !strings.Contains(out, "throttle config apply") {
+		t.Errorf("check does not name the command that reconciles them:\n%s", out)
 	}
 
 	// The stored budget and its period are untouched: reading a file did not move money.

@@ -41,7 +41,8 @@
   <h1>No budgets are defined.</h1>
   <p>throttle has nothing to show yet, which is not the same as showing zero spend.
      Define a budget and this page fills in.</p>
-  <pre>throttle define -id research -budget 2500 -recur monthly</pre>
+  <pre>throttle init          # write a configuration file
+throttle config apply  # store the budgets it describes</pre>
   <p class="muted">A budget is an allocation over a period. Everything on this dashboard
      — pace, bank, burn pressure, projection — is measured against one.</p>
 </main>

@@ -50,6 +50,8 @@ func main() {
 		err = defineCmd(os.Args[2:])
 	case "budgets":
 		err = budgetsCmd(os.Args[2:])
+	case "rename":
+		err = renameCmd(os.Args[2:])
 	case "status":
 		err = statusCmd(os.Args[2:])
 	case "periods":
@@ -85,14 +87,17 @@ func usage() {
 
 getting started
   init       write a starter configuration file
-  config     validate the configuration (check) or print what is in effect (show)
-  define     store a budget: an amount, a period, and optionally a parent
+  config     check, show, diff, or apply the configuration
+  define     store one budget from flags, without a configuration file
 
 watching the money
   status     where a budget stands: spent, reserved, banked or borrowed
   budgets    list the stored budgets
   periods    list a budget's periods
   serve      run the local read-only dashboard on 127.0.0.1
+
+changing a budget
+  rename     change a budget's display name; its money and history are untouched
 
 keeping the books straight
   advance    close periods that have ended and open the ones that follow
@@ -283,7 +288,7 @@ func budgetsCmd(args []string) error {
 		// The next step depends on whether there is a file to store from, so the message
 		// names the one that applies rather than both.
 		if len(cfg.Budgets) > 0 {
-			fmt.Printf("no budgets stored yet; %s defines %d (store one with \"throttle define -id <name>\")\n",
+			fmt.Printf("no budgets stored yet; %s defines %d (store them with \"throttle config apply\")\n",
 				cfg.Path, len(cfg.Budgets))
 			return nil
 		}

@@ -11,19 +11,23 @@ import (
 
 	"throttle/budget"
 	"throttle/config"
+	"throttle/engine"
+	"throttle/ledger/sqlite"
 )
 
-// The config commands: check, show, and the init that writes a first file.
+// The config commands: check, show, diff, apply, and the init that writes a first file.
 //
-// check and show are read-only in the strong sense. check opens the ledger to compare what
-// the file says against what is stored, and that comparison is a read: nothing in this file
-// calls PutDefinition, UpdateDefinition, EnsurePeriod, Advance, Recover, or Reconcile.
+// check, show, and diff are read-only in the strong sense. They open the ledger to compare
+// what the file says against what is stored, and that comparison is a read.
 //
-// That is not squeamishness. A definition's identity covers its allocation and its period
-// rule, so "make the ledger match the file" is an operation that can change what a live
-// budget is allowed to spend on the strength of somebody having edited a YAML file. Whether
-// throttle should offer that at all, and under what confirmation, is issue #21. Until it is
-// answered, throttle reports the difference and names the command that would apply it.
+// apply is the one mutating command, and it is explicit. A definition's identity covers its
+// allocation and its period rule, so "make the ledger match the file" can change what a live
+// budget is allowed to spend on the strength of somebody having edited a YAML file. That
+// belongs behind a command somebody typed, never behind loading configuration (issue #21).
+//
+// One planner, two commands: diff plans and renders, apply plans and executes. Sharing
+// config.NewPlan is what makes diff a dry run whose output describes what apply will do,
+// rather than a second implementation that agrees until it does not.
 
 func configCmd(args []string) error {
 	if len(args) == 0 {
@@ -35,6 +39,10 @@ func configCmd(args []string) error {
 		return configCheckCmd(args[1:])
 	case "show":
 		return configShowCmd(args[1:])
+	case "diff":
+		return configDiffCmd(args[1:])
+	case "apply":
+		return configApplyCmd(args[1:])
 	case "help", "-h", "--help":
 		configUsage()
 		return nil
@@ -45,12 +53,267 @@ func configCmd(args []string) error {
 }
 
 func configUsage() {
-	fmt.Fprintln(os.Stderr, `usage: throttle config <check|show> [flags]
+	fmt.Fprintln(os.Stderr, `usage: throttle config <check|show|diff|apply> [flags]
 
   check  validate the configuration and compare it to the stored budgets
   show   print the configuration in effect and where each value came from
+  diff   show what "apply" would change
+  apply  store the configured budgets in the ledger
 
-Neither writes anything. "throttle init" creates a starter file.`)
+Only "apply" writes. "throttle init" creates a starter file.`)
+}
+
+// configDiffCmd reports what apply would do, and writes nothing.
+//
+// The natural dry run, which is why apply has no -dry-run of its own: one command that
+// plans and renders, one that plans and executes, and no third code path claiming to
+// predict the second.
+func configDiffCmd(args []string) error {
+	fs := flag.NewFlagSet("config diff", flag.ContinueOnError)
+	common := addCommonFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := common.load()
+	if err != nil {
+		return err
+	}
+
+	plan, closeStore, err := planFor(cfg)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
+	if err := plan.Render(os.Stdout); err != nil {
+		return err
+	}
+	if plan.Mutates() {
+		fmt.Println("\nnothing was written. \"throttle config apply\" makes these changes.")
+	}
+	// A refusal is reported as an error even here: diff is what a CI job runs, and a
+	// configuration describing a change throttle will not make is a configuration problem
+	// whether or not anybody has tried to apply it yet.
+	if refusals := plan.Refusals(); len(refusals) > 0 {
+		return refusalSummary(refusals)
+	}
+	return nil
+}
+
+// configApplyCmd stores the configured budgets.
+func configApplyCmd(args []string) error {
+	fs := flag.NewFlagSet("config apply", flag.ContinueOnError)
+	common := addCommonFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := common.load()
+	if err != nil {
+		return err
+	}
+	if len(cfg.Budgets) == 0 {
+		if cfg.Path == "" {
+			return errors.New("config apply: no configuration file, so there are no budgets to " +
+				"apply (\"throttle init\" writes one)")
+		}
+		return fmt.Errorf("config apply: %s defines no budgets", cfg.Path)
+	}
+
+	ctx := context.Background()
+	eng, store, err := openLedger(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	stored, err := storedDefinitions(ctx, store)
+	if err != nil {
+		return err
+	}
+
+	plan := config.NewPlan(cfg.Budgets, stored, time.Now())
+	if err := plan.Render(os.Stdout); err != nil {
+		return err
+	}
+
+	res, err := config.Apply(ctx, store, plan)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println()
+	switch {
+	case len(res.Created) == 0 && len(res.Updated) == 0:
+		fmt.Println("nothing to apply")
+	default:
+		var parts []string
+		if n := len(res.Created); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d created", n))
+		}
+		if n := len(res.Updated); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d updated", n))
+		}
+		if res.Unchanged > 0 {
+			parts = append(parts, fmt.Sprintf("%d unchanged", res.Unchanged))
+		}
+		fmt.Println(strings.Join(parts, ", "))
+	}
+
+	// Apply itself materializes nothing: config.Writer has no period method, so the
+	// mutating path cannot open an envelope even by mistake. What follows is this command
+	// reporting where the budgets it just stored now stand, the way "define" does.
+	//
+	// That report is what brings a first period into being, and it is worth doing here
+	// rather than leaving to whatever runs next: a user who applies a file and then starts
+	// the dashboard should see their budgets, not a page saying nothing is materialized.
+	// Only budgets this command created are touched -- an update deliberately leaves the
+	// current period alone, and re-reading an unrelated budget's position is not this
+	// command's business.
+	for _, id := range res.Created {
+		reportPosition(ctx, eng, id)
+	}
+	return nil
+}
+
+// reportPosition prints where one budget stands, and is the thing that materializes its
+// first period.
+//
+// Nothing here is fatal. The definitions are stored -- that is what apply promised and it
+// succeeded -- so a budget that cannot yet report a position, because its term begins next
+// month, is a fact to state rather than a command to fail. Reporting an error after a
+// successful write would tell the reader the apply did not happen.
+func reportPosition(ctx context.Context, eng *engine.Engine, budgetID string) {
+	st, err := eng.Status(ctx, budgetID)
+	switch {
+	case errors.Is(err, budget.ErrNoSuchPeriod):
+		def, _, defErr := eng.Definition(ctx, budgetID)
+		if defErr != nil {
+			return
+		}
+		fmt.Printf("  %s: %s\n", budgetID, termText(def))
+	case err != nil:
+		// Any other read failure is the reporting step's problem, not the write's. Said
+		// plainly and quietly: the budget is stored either way.
+		fmt.Printf("  %s: stored; could not read its position (%v)\n", budgetID, err)
+	default:
+		fmt.Printf("  %s: current period %s → %s\n", budgetID,
+			st.Period.Envelope.Start.Format("2006-01-02"),
+			st.Period.Envelope.End.Format("2006-01-02"))
+	}
+}
+
+// renameCmd changes a budget's display name.
+//
+// Explicit, and separate from apply, because throttle does not infer a rename from two
+// definitions happening to match financially (issue #22). A name is metadata: this changes
+// what a budget is called and not what it may spend, and nothing historical is rewritten
+// because activity and reservations key on the durable id.
+func renameCmd(args []string) error {
+	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
+	common := addCommonFlags(fs)
+	fs.Usage = func() {
+		// Flags before the arguments, because that is what the flag package accepts:
+		// parsing stops at the first non-flag word, so a -config after the new name would
+		// be read as a third argument. Written the way it has to be typed.
+		fmt.Fprintln(os.Stderr, `usage: throttle rename [flags] <budget> <new name>
+
+Changes the display name only. The budget's allocation, period, history, and children are
+untouched, and its id stays the same.`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		fs.Usage()
+		return errors.New("rename: needs a budget id and a new name")
+	}
+	budgetID, name := fs.Arg(0), fs.Arg(1)
+
+	cfg, err := common.load()
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	_, store, err := openLedger(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	before, _, err := store.Definition(ctx, budgetID)
+	if err != nil {
+		return err
+	}
+	if err := config.Rename(ctx, store, budgetID, name); err != nil {
+		return err
+	}
+
+	switch {
+	case before.Name == name:
+		fmt.Printf("%s is already named %q\n", budgetID, name)
+	case before.Name == "":
+		fmt.Printf("%s is now named %q\n", budgetID, name)
+	default:
+		fmt.Printf("%s renamed from %q to %q\n", budgetID, before.Name, name)
+	}
+	return nil
+}
+
+// planFor loads the stored definitions and plans against them.
+//
+// Returns a closer rather than closing itself, because the caller may want the store open
+// while rendering. A missing ledger is not an error: planning against nothing is how a
+// first run reports that every budget is new.
+func planFor(cfg config.Config) (config.Plan, func(), error) {
+	noop := func() {}
+	if _, err := os.Stat(cfg.Ledger); errors.Is(err, os.ErrNotExist) {
+		return config.NewPlan(cfg.Budgets, nil, time.Now()), noop, nil
+	}
+
+	ctx := context.Background()
+	_, store, err := openLedger(ctx, cfg)
+	if err != nil {
+		return config.Plan{}, noop, err
+	}
+	stored, err := storedDefinitions(ctx, store)
+	if err != nil {
+		store.Close()
+		return config.Plan{}, noop, err
+	}
+	return config.NewPlan(cfg.Budgets, stored, time.Now()), func() { store.Close() }, nil
+}
+
+// storedDefinitions reads every stored definition with the revision that guards its update.
+//
+// Definitions() drops the revision, and an update without one is a last-write-wins update.
+// For a value that governs money that is not a tradeoff worth making, so each definition is
+// re-read for its revision.
+func storedDefinitions(ctx context.Context, store *sqlite.Store) ([]config.Stored, error) {
+	defs, err := store.Definitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]config.Stored, 0, len(defs))
+	for _, def := range defs {
+		_, revision, err := store.Definition(ctx, def.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, config.Stored{Definition: def, Revision: revision})
+	}
+	return out, nil
+}
+
+func refusalSummary(refusals []config.Step) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d budget(s) ask for a change throttle will not make:\n", len(refusals))
+	for _, s := range refusals {
+		fmt.Fprintf(&b, "  %s: %s\n", s.BudgetID, s.Reason)
+	}
+	b.WriteString("\nEdit the file to match what is stored, or make the change explicitly.")
+	return errors.New(b.String())
 }
 
 // configCheckCmd validates configuration without mutating anything.
@@ -146,7 +409,7 @@ func reportDrift(out *os.File, drifts []config.Drift) error {
 	}
 
 	for _, d := range newOnes {
-		printf(out, "  %s: not stored yet; \"throttle define\" creates it\n", d.BudgetID)
+		printf(out, "  %s: not stored yet; \"throttle config apply\" creates it\n", d.BudgetID)
 	}
 	for _, d := range renamed {
 		// Named but not treated as an error, because it is not a semantic difference and
@@ -165,9 +428,9 @@ func reportDrift(out *os.File, drifts []config.Drift) error {
 		return nil
 	}
 
-	// A real disagreement about money. Written to stderr and returned as an error, because a
-	// CI job checking its configuration should fail here: the file describes a budget the
-	// ledger is not governing, and nothing will quietly reconcile the two.
+	// A real disagreement about money. Returned as an error, because a CI job checking its
+	// configuration should fail here: the file describes a budget the ledger is not
+	// governing, and nothing reconciles the two on its own.
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d budget(s) differ from the stored definition:\n", len(changed))
 	for _, d := range changed {
@@ -177,8 +440,9 @@ func reportDrift(out *os.File, drifts []config.Drift) error {
 		}
 	}
 	b.WriteString("\nA stored definition governs money that has already been spent against it, " +
-		"so throttle\nwill not rewrite one because a file changed. Reconcile them deliberately: " +
-		"edit the file\nto match, or change the budget with an explicit update.")
+		"so a file\nchanging does not rewrite one. Reconcile them deliberately: " +
+		"\"throttle config diff\"\nshows what would change, and \"throttle config apply\" makes it so " +
+		"for future periods.")
 	return errors.New(b.String())
 }
 
@@ -285,12 +549,13 @@ func initCmd(args []string) error {
 	fmt.Printf("wrote %s\n\n", target)
 	fmt.Println("next:")
 	fmt.Println(`  1. edit the budget amount and period`)
-	fmt.Println(`  2. throttle config check`)
-	fmt.Println(`  3. throttle define -id default -budget '$100'   (store it in the ledger)`)
-	fmt.Println(`  4. throttle serve                               (watch it on the dashboard)`)
+	fmt.Println(`  2. throttle config check    (does it parse and make sense?)`)
+	fmt.Println(`  3. throttle config diff     (what would be stored?)`)
+	fmt.Println(`  4. throttle config apply    (store it in the ledger)`)
+	fmt.Println(`  5. throttle serve           (watch it on the dashboard)`)
 
-	// No store is created here. "throttle define" creates the ledger when it first needs
-	// one, which keeps init a command that writes one file and nothing else.
+	// No store is created here. "config apply" creates the ledger when it first needs one,
+	// which keeps init a command that writes one file and nothing else.
 	return nil
 }
 

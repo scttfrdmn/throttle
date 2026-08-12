@@ -125,19 +125,42 @@ budgets:
     amount: $1,000
 ```
 
-Then check it, store it, and watch it:
+Then check it, see what it would do, store it, and watch it:
 
 ```bash
 ./throttle config check    # parse, validate, resolve, and compare to the ledger. Writes nothing.
 ./throttle config show     # what is in effect, and where each value came from
-./throttle define -id research   # store the definition from the file
-./throttle status                # uses defaults.budget when no -id is given
-./throttle serve                 # the dashboard, on 127.0.0.1:7654
+./throttle config diff     # what "apply" would change, in detail. Still writes nothing.
+./throttle config apply    # store the definitions from the file
+./throttle status          # uses defaults.budget when no -id is given
+./throttle serve           # the dashboard, on 127.0.0.1:7654
 ```
 
-`config check` is read-only and exits nonzero on a problem, so it works as a CI step. It
-reports a file that disagrees with a stored budget rather than rewriting one: a stored
-definition governs money that has already been spent against it.
+`config check` and `config diff` are read-only and exit nonzero on a problem, so they work
+as CI steps. Reading a file never changes a stored budget: a stored definition governs money
+that has already been spent against it, so `config apply` is the only command that writes
+one, and it says what it did.
+
+`apply` is deliberately narrow about what it will do:
+
+```text
+research
+  changed: allocation
+      allocation: file $5000.00, stored $4000.00
+  current period unchanged
+  new definition applies beginning 2026-09-01 00:00 UTC
+```
+
+- Changing a recurring budget does **not** rewrite the period already running. Money spent
+  under the old terms was governed by the old terms; the new definition takes effect at the
+  next boundary, and `diff` says which date that is.
+- A budget that disappears from the file is left alone, not deleted. Nothing here removes a
+  durable definition.
+- A name that differs is reported, never applied: two budgets with identical financial terms
+  are not evidence of a rename. `throttle rename <budget> <new name>` is the explicit
+  command, and it changes the display name only.
+- If a stored definition changed since the diff, `apply` refuses rather than overwriting it.
+  Re-run `diff` and look again.
 
 Anything a flag can say, the file can say too, and the precedence is fixed — later wins,
 nothing merged:
@@ -179,20 +202,33 @@ scanned 18 / repaired 3 / consistent 10 / unresolved 3 / awaiting data 2
 ```
 
 Governing a Bedrock call is a shim around the real client, not a replacement for
-it — the request and response are the SDK's own types:
+it — the request and response are the SDK's own types. In full, against a budget
+`config apply` already stored:
 
 ```go
+ctx := context.Background()
+
+// Normal AWS SDK configuration: profiles, environment, IMDS, SSO. throttle adds
+// nothing here and holds no credentials of its own.
+awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+
+led, err := sqlite.Open(ctx, "/path/to/ledger.db") // the store "throttle config apply" wrote
+defer led.Close()
+
+eng, err := engine.New(engine.Config{Ledger: led})
+cat, err := fixtures.Catalog() // versioned price fixtures, with provenance
+
+brc := bedrockruntime.NewFromConfig(awsCfg)
 client, err := bedrock.New(bedrock.Config{
-	Client:   bedrockruntime.NewFromConfig(awsCfg),
-	Counter:  bedrockruntime.NewFromConfig(awsCfg), // optional: preflight token counts
-	Engine:   eng,
-	Catalog:  cat,
-	Activity: acts, // optional: durable, content-free per-request records
-	Region:   "us-east-1",
+	Client:  brc,
+	Counter: brc, // optional: preflight token counts
+	Engine:  eng,
+	Catalog: cat,
+	Region:  awsCfg.Region,
 })
 
 res, err := client.Converse(ctx, bedrock.Request{
-	BudgetID: "agents",
+	BudgetID: "agents", // a budget id from the config file
 	Input:    &bedrockruntime.ConverseInput{ /* unchanged, passed through verbatim */ },
 })
 // res.Output is Bedrock's own *ConverseOutput.
@@ -200,6 +236,10 @@ res, err := client.Converse(ctx, bedrock.Request{
 // res.Cost may be legitimately unknown while res.Usage is known: throttle reports
 // that it cannot price a request rather than pricing it at zero.
 ```
+
+Spend against `agents` also consumes `research`, because that is what the file said.
+Add `Activity: acts` (an `activity/sqlite` store) for durable, content-free
+per-request records, which is what the dashboard's history and breakdowns read.
 
 Under enforcement, a request throttle cannot price is denied before the provider is
 called — a dollar budget cannot be honestly enforced against exposure that cannot

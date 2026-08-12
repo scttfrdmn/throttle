@@ -583,7 +583,7 @@ func TestEmptyDashboard(t *testing.T) {
 	mustContain(t, body, "No budgets are defined.", "the first-run page must say so plainly")
 	mustContain(t, body, "not the same as showing zero spend",
 		"the first-run page must distinguish itself from zero spend")
-	mustContain(t, body, "throttle define", "the first-run page should say what to do next")
+	mustContain(t, body, "throttle config apply", "the first-run page should say what to do next")
 	mustNotContain(t, body, `data-field="spent"`,
 		"the first-run page must not render budget figures for a budget that does not exist")
 
