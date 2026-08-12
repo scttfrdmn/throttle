@@ -844,17 +844,29 @@ func TestErrorPathsStayReadable(t *testing.T) {
 // cannot disagree about which build they describe. What that value is depends on how the
 // binary was built and is not pinned here; that it is a plausible version, and identical in
 // both places, is.
+//
+// Deliberately not asserting a version number. An earlier form of this test required the
+// string to start with 0.1.0, which was true of a development build working towards the
+// first release and became false the moment that release was tagged -- a test that expires on
+// a date nobody wrote down. What must hold for any build of any version is that the answer
+// names either a real release or an honest development build, and never a placeholder or a
+// synthesized version of a release that does not exist.
 func TestVersionIsOneValue(t *testing.T) {
 	c := newCLI(t)
 	got := strings.TrimSpace(c.ok("version"))
 	if got == "" {
 		t.Fatal("throttle version printed nothing")
 	}
-	if !strings.HasPrefix(got, "0.1.0") && !strings.HasPrefix(got, "v0.1.0") {
-		t.Errorf("version %q does not look like this project's version", got)
-	}
-	// A development build says so rather than claiming to be a release.
-	if got == "(devel)" || strings.HasPrefix(got, "v0.0.0-") {
+	if got == "(devel)" {
 		t.Errorf("version %q reports a placeholder as though it were a release", got)
+	}
+	if isPseudoVersion(got) {
+		t.Errorf("version %q is a pseudo-version the toolchain synthesized for an untagged "+
+			"commit, so it names a release that was never made", got)
+	}
+	// Either the development version, or a real release this checkout sits at.
+	if !strings.HasPrefix(got, devVersion) && !isRelease(got) {
+		t.Errorf("version %q is neither the development version %q nor a release",
+			got, devVersion)
 	}
 }

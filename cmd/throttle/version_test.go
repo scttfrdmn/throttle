@@ -95,12 +95,15 @@ func TestLdflagsVersionWins(t *testing.T) {
 	}
 }
 
-// isRelease rejects the two values that look like releases and are not.
+// isRelease rejects the values that look like releases and are not.
 //
-// "(devel)" is what a build from a working tree reported for years; a v0.0.0- pseudo-version is
-// what a VCS-deriving toolchain reports when no tag is reachable, which is every build of this
-// project until it is tagged. Printing either as a release would put a version in a bug report
-// that names no code.
+// "(devel)" is what a build from a working tree reported for years; a pseudo-version is what a
+// VCS-deriving toolchain synthesizes for a commit that is not itself tagged. Printing either as
+// a release would put a version in a bug report that names no release.
+//
+// The v0.1.1-0. case is the one that mattered: checking for a v0.0.0- prefix caught only the
+// no-tag-anywhere form, so the moment a commit landed after the v0.1.0 tag every build began
+// reporting a confident v0.1.1 that had never been released.
 func TestIsRelease(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -108,12 +111,45 @@ func TestIsRelease(t *testing.T) {
 	}{
 		{"v0.1.0", true},
 		{"v1.2.3-rc1", true},
+		{"v0.1.0+dirty", true},
 		{"", false},
 		{"(devel)", false},
 		{"v0.0.0-20260811120000-abcdef123456", false},
+		{"v0.1.1-0.20260812173340-359035f4efbc", false},
+		{"v1.2.3-rc2.0.20260812173340-359035f4efbc", false},
 	} {
 		if got := isRelease(tc.in); got != tc.want {
 			t.Errorf("isRelease(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// isPseudoVersion matches the shape the toolchain actually produces, and nothing else.
+//
+// A release version that merely contains a hyphen and some digits is not a pseudo-version, and
+// rejecting one would make a legitimately tagged release report itself as a development build.
+func TestIsPseudoVersion(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"v0.0.0-20260811120000-abcdef123456", true},
+		{"v0.1.1-0.20260812173340-359035f4efbc", true},
+		{"v1.2.3-rc2.0.20260812173340-359035f4efbc", true},
+		{"v0.1.0", false},
+		{"v1.2.3-rc1", false},
+		{"v2.0.0-beta.1", false},
+		// A timestamp of the wrong length, and a revision of the wrong length: both are
+		// somebody's real version string rather than a synthesized one.
+		{"v0.1.1-0.2026081217334-359035f4efbc", false},
+		{"v0.1.1-0.20260812173340-359035f4efb", false},
+		// Upper-case hex is not how the toolchain writes a revision.
+		{"v0.1.1-0.20260812173340-359035F4EFBC", false},
+		{"", false},
+		{"v0.1.1-0.20260812173340-", false},
+	} {
+		if got := isPseudoVersion(tc.in); got != tc.want {
+			t.Errorf("isPseudoVersion(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }
