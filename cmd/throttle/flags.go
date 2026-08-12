@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/config"
-	"throttle/engine"
-	"throttle/ledger/sqlite"
-	"throttle/report"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/config"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/report"
 )
 
 // The shared configuration layer for every command.

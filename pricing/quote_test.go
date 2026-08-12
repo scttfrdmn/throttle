@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 func sonnetIdentity() usage.ModelIdentity {

@@ -11,11 +11,11 @@ import (
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcore"
 
-	"throttle/activity"
-	"throttle/engine"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // ErrNoRuntimeClient means InvokeAgentRuntime was called on a client built without

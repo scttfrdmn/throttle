@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"throttle/dashboard"
+	"github.com/scttfrdmn/throttle/dashboard"
 )
 
 // (16) "config show" reveals no secrets.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Scalar parsing: money, durations, dates. Every one of these reports the field path it

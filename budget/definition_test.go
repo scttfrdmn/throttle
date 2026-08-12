@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 func mustLoc(t *testing.T, name string) *time.Location {

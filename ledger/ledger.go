@@ -25,9 +25,9 @@ import (
 	"fmt"
 	"time"
 
-	"throttle/budget"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Errors returned by Ledger implementations.

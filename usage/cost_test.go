@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // The zero value must not read as a free request. A Cost nobody filled in is the

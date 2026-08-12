@@ -9,7 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Rendering the effective configuration.

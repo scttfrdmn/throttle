@@ -20,14 +20,14 @@ import (
 	"text/tabwriter"
 	"time"
 
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/budget"
-	"throttle/config"
-	"throttle/engine"
-	"throttle/ledger"
-	"throttle/ledger/sqlite"
-	"throttle/money"
-	"throttle/reconcile"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/config"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/reconcile"
 )
 
 const version = "0.1.0-dev"

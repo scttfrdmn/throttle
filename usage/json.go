@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Usage persists as a flat object of dimension -> count, e.g.

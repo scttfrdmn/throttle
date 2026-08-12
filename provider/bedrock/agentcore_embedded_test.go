@@ -7,9 +7,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/activity"
-	"throttle/engine"
-	"throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
 )
 
 // The inner half of AgentCore governance, proved rather than described.

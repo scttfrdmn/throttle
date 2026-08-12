@@ -3,7 +3,7 @@ package bedrock
 import (
 	"strings"
 
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // AccessProvider is the value this adapter records for the path a request took.

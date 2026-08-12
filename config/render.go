@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Rendering a plan.

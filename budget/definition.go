@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Recurrence is how a budget definition generates successive periods.

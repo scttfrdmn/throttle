@@ -7,9 +7,9 @@ import (
 
 	agenttypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime/types"
 
-	"throttle/activity"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Step kinds recorded for an observed model invocation.

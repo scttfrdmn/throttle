@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Planning what applying a configuration file would do.

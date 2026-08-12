@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Comparing a file to the ledger. Every case here is a pure function over two definition

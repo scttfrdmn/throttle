@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/report"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/report"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // These tests are about the accounting vocabulary surviving the trip into HTML. The read

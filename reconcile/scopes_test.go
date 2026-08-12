@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/ledger"
-	"throttle/money"
-	"throttle/reconcile"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/reconcile"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Attribution has to survive a crash, because a repair that loses it silently moves spend

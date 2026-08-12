@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // day is the sampling granularity most of these tests reason in.

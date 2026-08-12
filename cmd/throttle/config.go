@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"throttle/budget"
-	"throttle/config"
-	"throttle/engine"
-	"throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/config"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
 )
 
 // The config commands: check, show, diff, apply, and the init that writes a first file.

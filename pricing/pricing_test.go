@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 func dollars(t *testing.T, s string) money.Money {

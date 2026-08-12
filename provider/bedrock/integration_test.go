@@ -24,13 +24,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/ledger/sqlite"
-	"throttle/money"
-	"throttle/pricing/fixtures"
-	"throttle/provider/bedrock"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing/fixtures"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 var (

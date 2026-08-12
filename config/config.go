@@ -27,8 +27,8 @@ import (
 	"fmt"
 	"time"
 
-	"throttle/budget"
-	"throttle/engine"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
 )
 
 // SchemaVersion is the configuration schema this build understands.

@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcore"
 	"github.com/aws/smithy-go/middleware"
 
-	"throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
 )
 
 // The AgentCore fake is a reader rather than an event source, and that is the SDK's

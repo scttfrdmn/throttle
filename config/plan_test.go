@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Planning what apply would do.

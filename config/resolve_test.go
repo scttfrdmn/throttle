@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/engine"
+	"github.com/scttfrdmn/throttle/engine"
 )
 
 // envWith builds a test environment whose Getenv reads from a map rather than the process,

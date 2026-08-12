@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
-	"throttle/ledger"
-	"throttle/ledger/sqlite"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 func dollars(d int64) money.Money { return money.Money(d) * money.PerDollar }

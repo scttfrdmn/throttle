@@ -36,12 +36,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/activity"
-	"throttle/engine"
-	"throttle/ledger"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // ConverseAPI is the slice of the Bedrock Runtime client this adapter uses.

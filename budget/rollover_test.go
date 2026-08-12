@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // alloc is the closing period's allocation, which a percentage cap resolves

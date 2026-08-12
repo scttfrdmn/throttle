@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/activity/sqlite"
-	"throttle/engine"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 var at = time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)

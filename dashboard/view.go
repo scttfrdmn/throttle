@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"throttle/money"
-	"throttle/report"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/report"
 )
 
 // The view model is where geometry happens: pixels, arcs, and path strings.

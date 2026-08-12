@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/provider/bedrock"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // The central honesty constraint: no Converse estimate may claim to be exact.

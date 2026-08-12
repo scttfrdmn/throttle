@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/ledger"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // (18) A dashboard reads while requests are being governed. Both stores are SQLite, both

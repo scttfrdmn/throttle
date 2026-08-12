@@ -3,7 +3,7 @@ package config
 import (
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Overriding one budget's fields from the command line.

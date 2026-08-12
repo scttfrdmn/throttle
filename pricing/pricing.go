@@ -20,8 +20,8 @@ import (
 	"math/big"
 	"time"
 
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 var (

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // --- cost completeness -----------------------------------------------------

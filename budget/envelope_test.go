@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 func dollars(d int64) money.Money { return money.Money(d) * money.PerDollar }

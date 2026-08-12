@@ -13,15 +13,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/activity"
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/ledger"
-	"throttle/ledger/sqlite"
-	"throttle/pricing"
-	"throttle/provider/bedrock"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // streamHarness is the Converse harness plus a streaming client.

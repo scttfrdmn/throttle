@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"throttle/budget"
-	"throttle/ledger"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
 )
 
 // Executing a plan.

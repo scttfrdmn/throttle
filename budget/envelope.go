@@ -12,7 +12,7 @@ import (
 	"math/big"
 	"time"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // RolloverMode selects what happens to an envelope's unused or overspent

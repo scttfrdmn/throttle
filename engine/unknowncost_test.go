@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"throttle/budget"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // unpriced is an estimate for a model the catalog cannot price at all.

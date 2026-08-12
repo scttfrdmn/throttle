@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"throttle/budget"
-	"throttle/ledger"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Period transition semantics

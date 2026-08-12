@@ -7,8 +7,8 @@ import (
 	"sort"
 	"time"
 
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // QuoteSet is an immutable set of captured quotes taken in one catalog read, for a

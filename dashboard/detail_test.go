@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // The detail page is where a compound transaction has to be legible without becoming a

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"throttle/activity"
-	"throttle/budget"
-	"throttle/money"
-	"throttle/report"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/report"
 )
 
 // buildPosition renders the budget summary panel.

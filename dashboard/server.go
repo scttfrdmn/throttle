@@ -32,7 +32,7 @@ import (
 	"strings"
 	"time"
 
-	"throttle/report"
+	"github.com/scttfrdmn/throttle/report"
 )
 
 //go:embed templates/*.html

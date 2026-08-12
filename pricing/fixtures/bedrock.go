@@ -15,9 +15,9 @@ package fixtures
 import (
 	"time"
 
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Source and FixtureVersion identify these numbers as hand-entered fixtures, so a

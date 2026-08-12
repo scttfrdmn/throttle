@@ -3,7 +3,7 @@ package bedrock
 import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // normalizeTokens converts Bedrock's TokenUsage into throttle's provider-neutral

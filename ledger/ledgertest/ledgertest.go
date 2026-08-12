@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
-	"throttle/ledger"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Factory builds a fresh, empty store for one test.

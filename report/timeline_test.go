@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
-	"throttle/ledger"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // The gap between the actual line and the target line IS the pace balance. That is the

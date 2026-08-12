@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // agentRecord is a managed agent turn: ONE governed transaction with internal model

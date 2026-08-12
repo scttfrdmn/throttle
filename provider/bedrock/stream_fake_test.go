@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
 )
 
 // fakeReader implements bedrockruntime.ConverseStreamOutputReader, which is the

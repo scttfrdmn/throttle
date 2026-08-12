@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Nano's quantization is a public semantic, not an implementation detail: it decides

@@ -11,12 +11,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"throttle/activity"
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/engine"
-	"throttle/pricing"
-	"throttle/provider/bedrock"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // withActivity attaches a durable activity store to a harness and returns it, so

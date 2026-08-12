@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Static is an in-memory catalog backed by an explicit list of prices.

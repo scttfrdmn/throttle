@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
-	"throttle/ledger"
-	"throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
 )
 
 // Applying a plan.

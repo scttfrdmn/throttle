@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Every test in this package describes its own environment through config.Env. None reads

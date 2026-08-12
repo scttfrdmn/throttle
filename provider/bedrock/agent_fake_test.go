@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime"
 	agenttypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime/types"
 
-	"throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
 )
 
 // fakeAgentReader implements bedrockagentruntime.ResponseStreamReader, the mocking

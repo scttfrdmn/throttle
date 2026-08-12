@@ -1,4 +1,4 @@
-module throttle
+module github.com/scttfrdmn/throttle
 
 go 1.25.0
 

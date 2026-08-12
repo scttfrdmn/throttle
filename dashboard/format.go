@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"throttle/money"
-	"throttle/report"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/report"
 )
 
 // Every figure on a page is rendered by a function in this file. Templates cannot

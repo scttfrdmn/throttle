@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Valid is the minimum needed to account for a request honestly. Canonical

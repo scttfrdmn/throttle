@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Comparing what a config file says to what the ledger holds.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/ledger"
+	"github.com/scttfrdmn/throttle/ledger"
 )
 
 // A dashboard reads a live ledger while requests are being admitted and settled

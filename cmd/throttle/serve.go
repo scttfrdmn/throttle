@@ -10,9 +10,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"throttle/config"
-	"throttle/dashboard"
-	"throttle/report"
+	"github.com/scttfrdmn/throttle/config"
+	"github.com/scttfrdmn/throttle/dashboard"
+	"github.com/scttfrdmn/throttle/report"
 )
 
 // serveCmd runs the local dashboard.

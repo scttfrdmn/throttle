@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	"throttle/budget"
-	"throttle/ledger"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // --- the empty dashboard ---------------------------------------------------

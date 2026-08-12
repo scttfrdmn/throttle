@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
+	"github.com/scttfrdmn/throttle/budget"
 )
 
 // Flag overrides go through the same parsers a file does. These tests exist mostly to catch

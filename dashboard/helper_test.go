@@ -12,16 +12,16 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/ledger"
-	ledgersqlite "throttle/ledger/sqlite"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/report"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	ledgersqlite "github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/report"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // The dashboard is tested against a real read model over real SQLite stores, for the

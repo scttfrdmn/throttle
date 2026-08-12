@@ -16,8 +16,8 @@ import (
 	"context"
 	"time"
 
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Estimator predicts what a request will consume, before it runs.

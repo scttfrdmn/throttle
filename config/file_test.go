@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // writeConfig puts a document in a temp directory and returns its path.

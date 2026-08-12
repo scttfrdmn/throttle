@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // An absent dimension and a dimension reported as zero are different facts: the

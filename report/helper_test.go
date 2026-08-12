@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"throttle/activity"
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/ledger"
-	ledgersqlite "throttle/ledger/sqlite"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	ledgersqlite "github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // The read model is tested against the real stores rather than against fakes.

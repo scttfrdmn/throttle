@@ -35,9 +35,9 @@ import (
 	"strings"
 	"time"
 
-	"throttle/ledger"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 
 	_ "modernc.org/sqlite"
 )

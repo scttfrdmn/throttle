@@ -7,8 +7,8 @@ import (
 	"sort"
 	"time"
 
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // CapturedQuote is an immutable snapshot of the rates a request will be priced

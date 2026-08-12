@@ -8,14 +8,14 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
-	"throttle/activity"
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/ledger"
-	"throttle/ledger/sqlite"
-	"throttle/money"
-	"throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/activity"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
 )
 
 // wholePeriod is a borrow window covering the whole month, so these tests exercise

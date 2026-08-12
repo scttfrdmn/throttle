@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"throttle/report"
+	"github.com/scttfrdmn/throttle/report"
 )
 
 // Everything on this dashboard is a snapshot of current budget state, and a cached

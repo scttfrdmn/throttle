@@ -13,15 +13,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	agenttypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime/types"
 
-	"throttle/activity"
-	activitysqlite "throttle/activity/sqlite"
-	"throttle/budget"
-	"throttle/engine"
-	"throttle/ledger/sqlite"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/provider/bedrock"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger/sqlite"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/provider/bedrock"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // haikuID is a second priced model, for the turns that invoke more than one.

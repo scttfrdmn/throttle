@@ -4,8 +4,8 @@ import (
 	"context"
 	"sort"
 
-	"throttle/activity"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Facet is a dimension to break spend down by.

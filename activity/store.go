@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // ErrNotFound means no record has the given request ID.

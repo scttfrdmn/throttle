@@ -74,11 +74,11 @@ import (
 	"sort"
 	"time"
 
-	"throttle/activity"
-	"throttle/ledger"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Class is the outcome of reconciling one record.

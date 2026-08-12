@@ -5,10 +5,10 @@ import (
 	"sort"
 	"time"
 
-	"throttle/activity"
-	"throttle/engine"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // CostState is how a cost figure should be read.

@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"time"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // BasisPointsPerWhole is the denominator for percentage rollover caps. Caps are

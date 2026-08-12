@@ -10,12 +10,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime"
 	agenttypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentruntime/types"
 
-	"throttle/activity"
-	"throttle/engine"
-	"throttle/ledger"
-	"throttle/money"
-	"throttle/pricing"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/activity"
+	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/pricing"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // ErrNoAgentClient means InvokeAgent was called on a client built without an

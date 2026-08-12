@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"throttle/ledger"
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // Timeline is budget-over-time: what pacing said should have been spent, what was

@@ -27,10 +27,10 @@ import (
 	"sync"
 	"time"
 
-	"throttle/budget"
-	"throttle/ledger"
-	"throttle/money"
-	"throttle/usage"
+	"github.com/scttfrdmn/throttle/budget"
+	"github.com/scttfrdmn/throttle/ledger"
+	"github.com/scttfrdmn/throttle/money"
+	"github.com/scttfrdmn/throttle/usage"
 )
 
 // Mode is the enforcement posture for a budget.

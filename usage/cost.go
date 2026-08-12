@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"throttle/money"
+	"github.com/scttfrdmn/throttle/money"
 )
 
 // ErrCostUnknown reports that usage is known but cannot be fully priced.
