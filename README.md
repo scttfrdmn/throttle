@@ -118,8 +118,9 @@ that quietly omits unpriceable spend is worse than one that admits it is a lower
 go install github.com/scttfrdmn/throttle/cmd/throttle@latest
 ```
 
-> This repository is not public yet, so that command does not work for you today. Until it is,
-> build from a checkout: `go build -o throttle ./cmd/throttle`.
+Or download a prebuilt binary for macOS or Linux from the
+[releases page](https://github.com/scttfrdmn/throttle/releases). From a checkout,
+`go build -o throttle ./cmd/throttle` works with no further setup.
 
 `throttle init` writes a starter configuration file and nothing else — no databases, no
 credentials, no cloud resources:
