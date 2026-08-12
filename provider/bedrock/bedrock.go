@@ -581,6 +581,11 @@ func (c *Client) record(ctx context.Context, rec activity.Record, begin bool) {
 
 // scopesOf converts a reservation's legs into activity scopes, so a record keeps
 // its attribution after the reservation itself is gone.
+//
+// The legs are the whole input, deliberately. This adapter knows the budget id the caller
+// passed and could build a chain from it, and doing so would be the bug: the recorded
+// attribution has to be the chain the money actually moved through, which is the one the
+// ledger derived from stored parent links. See activity.Scope for the contract.
 func scopesOf(r ledger.Reservation) []activity.Scope {
 	out := make([]activity.Scope, 0, len(r.Legs))
 	for _, l := range r.Legs {

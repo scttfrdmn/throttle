@@ -102,6 +102,10 @@ type Record struct {
 	// BudgetID is the budget named by the caller. Scopes lists every scope the
 	// hold actually consumed, including ancestors, so attribution survives even
 	// after the reservation is gone.
+	//
+	// Scopes must come from the reservation's legs, never from the call site. See
+	// Scope for why that is a contract: it is the only thing making a parent's
+	// reported spend include its children's.
 	BudgetID string
 	Scopes   []Scope
 
@@ -448,6 +452,36 @@ func (h HostedRuntime) Empty() bool {
 }
 
 // Scope is a (budget, period) pair the request consumed.
+//
+// # Where scopes come from
+//
+// A scope must be derived from the reservation's legs, which the ledger derives from the
+// stored parent links. It is not attribution the caller supplies, and an adapter must not
+// assemble one from anything it knows at the call site.
+//
+// That is a contract rather than a preference, because parent-level reporting has no other
+// mechanism. A parent's figures include its children's spend because each child's record
+// carries a scope for every budget the hold consumed, and a report for the parent matches on
+// those scopes. Two things follow:
+//
+//   - A record naming only the leaf makes every ancestor's reported spend understate reality,
+//     silently, and by exactly what its children spent.
+//   - Scopes assembled by a caller would let attribution disagree with where the money
+//     actually went -- and would make the reported hierarchy an assertion by the code that
+//     spent the money rather than a fact about the accounting.
+//
+// One source for both, and it is the stored hierarchy: the ledger decides which envelopes a
+// hold consumes, and Scopes is a record of that decision. See provider/bedrock's scopesOf for
+// the conversion, and provider/bedrock/scopes_test.go for the invariant tested three levels
+// deep -- three because a two-level test passes for an implementation that records "the budget
+// and its parent", which is not the invariant.
+//
+// Depth is the distance from the budget the caller named: 0 for the leaf, 1 for its parent,
+// and so on. It orders the chain for display; it is not what makes a scope authoritative.
+//
+// Scopes outlive the reservation they came from, which is the point. A hold is released or
+// settled and then gone, so a record that referred back to it for attribution would lose it
+// exactly when the history became worth reading.
 type Scope struct {
 	BudgetID string `json:"budget_id"`
 	PeriodID string `json:"period_id"`
