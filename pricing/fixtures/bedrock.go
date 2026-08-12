@@ -163,8 +163,18 @@ func agentCoreRuntime() []pricing.Price {
 // rather than a convenience for tests.
 var agentCoreEffectiveFrom = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 
-// Catalog returns a static catalog of the Bedrock fixtures, including AgentCore
-// Runtime resource rates.
+// Catalog returns a static catalog of every fixture in this package: the Bedrock
+// models, AgentCore Runtime resource rates, and the OpenAI models.
+//
+// One catalog across access providers rather than one per provider, because that is
+// how a real deployment reaches more than one: prices key on (access provider,
+// provider model ID), so entries for different providers cannot collide, and
+// nothing that enumerates the catalog is confused by the mixture -- pricing.CaptureSet
+// filters by access provider before capturing.
 func Catalog() (*pricing.Static, error) {
-	return pricing.NewStatic(append(Bedrock(), agentCoreRuntime()...)...)
+	prices := make([]pricing.Price, 0, 64)
+	prices = append(prices, Bedrock()...)
+	prices = append(prices, agentCoreRuntime()...)
+	prices = append(prices, OpenAI()...)
+	return pricing.NewStatic(prices...)
 }

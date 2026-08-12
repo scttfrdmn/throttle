@@ -140,7 +140,24 @@ dollar was spent on tokens, images, or seconds of audio.
 The native SDK remains the user's mental model; throttle wraps and intercepts
 rather than inventing a new universal generation API. There is deliberately no
 common `Client` interface for adapters to implement: a caller who wants Bedrock's
-`Converse` gets Bedrock's `Converse`, with governance around it.
+`Converse` gets Bedrock's `Converse`, with governance around it, and a caller who
+wants OpenAI's `Responses.New` passes and receives the SDK's own parameter and
+response types.
+
+Adapters resemble each other because the lifecycle is the same, not because they
+share a supertype. Two adapters that both estimate, capture a quote, reserve, call,
+normalize, and settle will look alike at that level and differ everywhere the
+providers differ — inclusive versus disjoint usage reports, whether a preflight token
+count exists, whether the service tier that billed is the one requested, whether
+charges arrive outside the usage object at all. A common interface would have to
+either erase those differences or grow a union of them, and the second is what
+adapters already are.
+
+The consumer-defined interfaces each adapter declares for its own provider client are
+a different thing and are why the suites need no credentials: they name the one or two
+methods that adapter calls, take the SDK's real request and response types, and are
+satisfied by a fake in tests and by a thin wrapper over the real client in
+production.
 
 ### Streaming responses
 
@@ -362,6 +379,12 @@ Access provider and publisher are independent because both questions are real:
 "how much did I spend through Bedrock?" and "how much did I spend on Claude,
 everywhere?"
 
+They are independent even where they coincide. A request to OpenAI records `openai`
+as both, because OpenAI publishes the models it serves — that is a fact about the
+provider, not a reason to collapse two fields. The moment one vendor's model is
+reachable by two paths, or one path serves two vendors' models, a merged field can
+answer neither question, and both cases already exist.
+
 Only access provider, provider model ID, and operation are required. **The provider
 model ID is authoritative raw identity; canonical naming is enrichment.** A model
 released this morning must remain usable by a build from last month, so an
@@ -411,6 +434,28 @@ that tier can price differently. The captured quote therefore carries the model'
 other priced tiers as **alternates**, collected in the same catalog read, and
 settlement selects among them. That is still a replay of frozen rates rather than a
 re-query.
+
+This splits one question into two that must be answered from different sources:
+
+- **Which rates apply** comes from the knowledge frozen at admission. Always.
+- **Which of those rates apply to this request** comes from what the provider
+  actually reported. The tier that billed is the one the provider served, not the one
+  the caller asked for, and a request downgraded to a cheaper tier must not be charged
+  at the premium rate it requested — nor the reverse.
+
+The two providers exercise this differently, which is why it is one mechanism rather
+than a special case. Bedrock's tiering is largely an access dimension chosen up front;
+OpenAI reports `service_tier` on the response and may serve a flex request on the
+standard tier under load. In both, settlement prices the *observed* dimensions against
+the *frozen* basis.
+
+A tier with no captured alternate currently falls back to the primary quote — the
+rates the request was admitted under — on the grounds that pricing by the admitted
+rates is closer to the truth than pricing by nothing. That is defensible when the
+unrecognized tier is a *cheaper* one and an overstatement is the safe direction, and
+it is wrong when a provider introduces a new premium tier: the request would settle at
+the standard rate and read as fully priced. The gap is provider-neutral and predates
+any one adapter.
 
 ### When the model is not knowable at admission: a captured quote set
 
@@ -477,6 +522,25 @@ What throttle does in that state (issue #17, decided):
 - **Never:** guess a price, borrow a similar model's price, or silently price as
   zero. A local or negotiated override may turn an otherwise unknown model into a
   known priced one, and that provenance is preserved on the quote.
+
+These rules are about a *missing rate*, but the same three-valued cost carries a
+second and subtler incompleteness: a charge that has no dimension to price. When a
+provider bills for something it never reports in the response — a hosted tool's
+per-call fee, storage held between turns, a session on a provider-run container —
+the usage report can be complete and correctly priced while the *bill* is larger.
+The honest figure is then a floor, and it is one whether or not any rate was missing.
+
+The consequence for enforcement is the load-bearing part: a request of that shape is
+never treated as fully priced, because doing so would let a budget be governed against
+a number the provider has already exceeded. It is also why "unpriced dimensions" and
+"incomplete cost" are not the same predicate — a request can have no unpriced
+dimension and still not have a total.
+
+Where the caller's own code executes a tool, no provider charge exists at all, and
+throttle attributes none. The model tokens spent asking for the call and interpreting
+its result are throttle's business; what the caller's function did is not, and neither
+is a third party's MCP server. Inventing a figure for either would be fabrication, not
+conservatism.
 
 ### Unresolved liabilities
 

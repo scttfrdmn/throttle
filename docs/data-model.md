@@ -60,8 +60,28 @@ cache_write_tokens
 
 Cache reads and writes are separate dimensions rather than adjustments to input,
 because they carry separate prices. Provider-reported totals (Bedrock's
-`totalTokens`) are display-only and never used for accounting, since they sum
-dimensions that are priced differently.
+`totalTokens`, OpenAI's `total_tokens`) are display-only and never used for
+accounting, since they sum dimensions that are priced differently.
+
+**Dimensions are disjoint.** Every count is the number of units billed at *that*
+dimension's rate and at no other, so the cost of a request is the sum over its
+dimensions with no correction term. This is a property of throttle's normalized
+form, not of any provider's wire format, and providers do report otherwise:
+OpenAI's `input_tokens` is inclusive of the cached tokens broken out beneath it,
+and its `output_tokens` is inclusive of reasoning tokens, which bill at the output
+rate. An adapter facing an inclusive report must therefore **subtract** its way to
+the normalized form rather than copying fields across.
+
+Copying an inclusive total into a disjoint dimension double-charges the overlap,
+and it does so silently: the resulting cost is plausible, internally consistent,
+and wrong by the price of the cached prefix. Which subset is included in which
+total is a per-provider fact that changes without notice, so it belongs in an
+adapter — pinned by a test that prices a response whose overlap is large enough
+that double-charging cannot be mistaken for rounding.
+
+Decomposition never produces a negative count. A report whose parts exceed their
+stated total is a provider contract violation rather than a negative dimension, and
+is floored at zero.
 
 An **absent dimension is not zero**. "The provider did not report cache reads" and
 "the provider reported zero cache reads" are different facts, and only the second
@@ -137,6 +157,14 @@ an apparently authoritative number.
 - **partial** — some dimensions priced, at least one nonzero dimension did not.
   `amount` is a floor, and `unpriced` names what is missing so a later
   reconciliation knows which prices it needs. This renders as `$812.41+`.
+
+  Partial also covers a charge that is not a *dimension* at all: a provider-hosted
+  tool whose fee is levied per call, per stored gigabyte, or per session, and
+  reported nowhere in the response. `unpriced` is then empty while the cost is still
+  incomplete, because nothing throttle could price was missing a rate — the charge
+  simply never appeared in the usage report. `reason` carries what `unpriced` cannot
+  say. A request whose provider charges arrive partly outside the usage object is
+  never "fully priced", and enforcement must not treat its token cost as its cost.
 - **unknown** — nothing could be priced. There is no amount; the JSON form omits
   the field entirely, so nothing that ignores completeness can read a stored zero
   back as a free request.
@@ -238,8 +266,23 @@ historical    # derived from past observations
 unknown       # no basis
 ```
 
-No Bedrock `Converse` estimate is exact: `CountTokens` returns input tokens only,
-and output tokens cannot be known before generation.
+**No estimate of a generative request is `exact`, on any provider.** Output tokens
+cannot be known before generation, so the output half of any estimate is a declared
+ceiling at best. Bedrock's `CountTokens` and OpenAI's input-token count endpoint both
+cover the input half only, and neither vendor documents its count as the number that
+will be billed — so even the input half is `conservative` rather than exact. `exact`
+is reserved for a preflight figure a provider states will be billed, which is not on
+offer today.
+
+The label is not cosmetic. It is what a later reader uses to decide whether an
+estimate's divergence from actual is a bug or the expected behaviour of a guess, and
+calling a count exact because it came from an API would make that judgement
+impossible.
+
+An estimate is also only as complete as the modalities it covers. A text tokenizer
+says nothing about an image, an audio second, a file the provider parsed, or a
+hosted tool's fee, so a request carrying those has monetary exposure the token count
+does not describe — an incompleteness of the estimate, distinct from its accuracy.
 
 A managed agent invocation is weaker still. throttle cannot know how many foundation
 models the agent will invoke, so no token count is available to bound and `CountTokens`

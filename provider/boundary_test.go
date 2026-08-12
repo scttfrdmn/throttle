@@ -68,3 +68,30 @@ func TestCoreDoesNotDependOnProviderSDKs(t *testing.T) {
 		})
 	}
 }
+
+// The test above is an absence check, and an absence check passes for the wrong
+// reason if the thing it looks for is not in the build at all. So each adapter is
+// also asserted to really depend on its provider's SDK.
+//
+// Without this, deleting an adapter -- or misspelling an entry in the forbidden list
+// -- would turn the boundary test green while proving nothing. The two together say
+// something worth knowing: the SDKs are present in this module, and they stop at the
+// adapters.
+func TestAdaptersDoDependOnTheirProviderSDK(t *testing.T) {
+	adapters := map[string]string{
+		"github.com/scttfrdmn/throttle/provider/bedrock": "aws-sdk-go",
+		"github.com/scttfrdmn/throttle/provider/openai":  "openai-go",
+	}
+
+	for pkg, sdk := range adapters {
+		t.Run(pkg, func(t *testing.T) {
+			out, err := exec.Command("go", "list", "-deps", pkg).Output()
+			if err != nil {
+				t.Skipf("go list unavailable: %v", err)
+			}
+			if !strings.Contains(string(out), sdk) {
+				t.Errorf("%s does not depend on %s, so the boundary test above is proving nothing", pkg, sdk)
+			}
+		})
+	}
+}

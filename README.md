@@ -51,8 +51,9 @@ period, optionally capped, so a slow month funds a busy one.
 
 ## What works today
 
-Governed AWS Bedrock calls work end to end: `Converse`, `ConverseStream`, Agents Classic
-`InvokeAgent`, and AgentCore `InvokeAgentRuntime`. Around them:
+Governed calls work end to end against two providers: AWS Bedrock — `Converse`,
+`ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime` — and
+OpenAI's Responses API, non-streaming. Around them:
 
 - **Budgets** with arbitrary envelopes — `monthly` is shorthand for the same period rule a
   two-year grant uses — plus linear pacing, banking, time-based borrowing, rollover with an
@@ -69,10 +70,9 @@ Governed AWS Bedrock calls work end to end: `Converse`, `ConverseStream`, Agents
 - **A local SQLite ledger and activity store.** No server, no account, no network calls of
   throttle's own.
 
-Not yet: any provider other than Bedrock. The engine imports no provider SDK and the usage and
-pricing records are provider-neutral by design, but OpenAI, Anthropic direct, and Gemini
-adapters do not exist — nothing here supports them today. Pricing ships as a versioned fixture
-catalog rather than a live AWS Price List sync, and the worker that ingests delayed AgentCore
+Not yet: OpenAI streaming, Chat Completions, Anthropic direct, and Gemini. Those adapters do
+not exist — nothing here supports them today. Pricing ships as a versioned fixture catalog
+rather than a live price-list sync, and the worker that ingests delayed AgentCore
 runtime-resource usage is not written, though the data model and join keys for it are.
 
 Release scope is the [`v0.1.0` milestone](https://github.com/scttfrdmn/throttle/milestone/1).
@@ -93,7 +93,7 @@ Deliberately **not** stored, anywhere, ever:
 - agent trace payloads — throttle enables the trace because it is the only place per-invocation
   usage is reported, passes all of it to you, and persists none of it
 - AgentCore request and response bodies, which it forwards without parsing
-- provider credentials or API keys, which stay with the AWS SDK's normal mechanisms
+- provider credentials or API keys, which stay with each provider SDK's normal mechanisms
 
 There is no telemetry. Nothing reports to us, there is no licence check or user counting, and
 the only network calls are the ones your own application makes to its provider.
