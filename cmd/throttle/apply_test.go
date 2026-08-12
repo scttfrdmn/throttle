@@ -192,6 +192,89 @@ func TestDashboardShowsAppliedHierarchyWithNoActivity(t *testing.T) {
 	}
 }
 
+// futureGrant is a budget whose term begins after it is applied, which is the ordinary
+// shape of a grant somebody sets up in advance. The anchor is far enough out to stay in
+// the future for the life of the project, since it is a literal.
+const futureGrant = `
+version: 1
+defaults:
+  budget: grant
+budgets:
+  grant:
+    name: Research grant
+    amount: $125,000
+    period:
+      recur: monthly
+      anchor: 2099-09-01
+`
+
+// A budget applied before its term begins renders on the dashboard rather than 404ing.
+//
+// This is the release blocker end to end: apply a valid definition whose period has not
+// started, serve, and open the page. Nothing has spent against it, so the ledger holds no
+// period row -- which used to make the whole dashboard, root page included, return 404 for
+// a correctly configured grant.
+func TestDashboardShowsAFutureBudgetRatherThan404(t *testing.T) {
+	c := newCLI(t)
+	path := filepath.Join(c.home, "throttle.yaml")
+	c.write(path, futureGrant)
+	cfg := []string{"-config", path}
+
+	if out := c.ok(append([]string{"config", "apply"}, cfg...)...); !strings.Contains(out, "1 created") {
+		t.Fatalf("apply of a future budget does not report a create:\n%s", out)
+	}
+	// Apply materializes nothing for a term that has not begun, which is the state under
+	// test: the definition is durable and there is no period row.
+	if out := c.ok(append([]string{"periods", "-id", "grant"}, cfg...)...); !strings.Contains(out, "not started yet") {
+		t.Fatalf("the fixture has periods already:\n%s", out)
+	}
+
+	addr := freeAddr(t)
+	serve := exec.Command(binary, append([]string{"serve", "-listen", addr}, cfg...)...)
+	serve.Env = c.env()
+	if err := serve.Start(); err != nil {
+		t.Fatalf("start serve: %v", err)
+	}
+	defer func() {
+		_ = serve.Process.Kill()
+		_, _ = serve.Process.Wait()
+	}()
+
+	base := "http://" + addr
+	waitForHTTP(t, base+"/healthz")
+
+	// The root page, with no budget named: a future budget is the only one defined, so this
+	// is the page a new user lands on immediately after apply.
+	for _, path := range []string{"/", "/?budget=grant", "/api/summary?budget=grant"} {
+		res, err := http.Get(base + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200: the budget is defined, not missing\n%s",
+				path, res.StatusCode, truncate(string(body)))
+		}
+	}
+
+	// Research grant / not started / starts 2099-09-01 / $125,000.
+	body := fetch(t, base+"/?budget=grant")
+	for _, want := range []string{"Research grant", "not started", "2099-09-01", "$125,000.00"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the dashboard does not show %q for a future budget:\n%s", want, truncate(body))
+		}
+	}
+	if strings.Contains(body, "No budgets are defined") {
+		t.Errorf("a defined future budget reads as no budgets at all:\n%s", truncate(body))
+	}
+
+	// And reading it wrote nothing: the CLI still reports no periods, from the same store.
+	if out := c.ok(append([]string{"periods", "-id", "grant"}, cfg...)...); !strings.Contains(out, "not started yet") {
+		t.Errorf("serving the dashboard materialized a period:\n%s", out)
+	}
+}
+
 // (1) config diff writes nothing, at the level a user can observe.
 //
 // Asserted on the ledger's content rather than on file bytes: the store runs in WAL mode,

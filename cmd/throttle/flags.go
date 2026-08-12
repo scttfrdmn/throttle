@@ -25,6 +25,24 @@ import (
 // fills from its own flag set, and turns into the configuration it needs. Commands share the
 // resolution, not the state.
 
+// setUsage gives a command's help the same shape as "throttle -h".
+//
+// The flag package's default heading is "Usage of status:", which names a flag set rather than
+// anything a person can type, says nothing about the arguments a command takes, and does not
+// say what the command is for. One helper, so that fifteen commands cannot drift into fifteen
+// shapes: a synopsis in the form somebody would type it, a sentence or two of what it does and
+// whether it writes, then the flags.
+func setUsage(fs *flag.FlagSet, synopsis, blurb string) {
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: throttle %s\n", synopsis)
+		if blurb != "" {
+			fmt.Fprintf(os.Stderr, "\n%s\n", blurb)
+		}
+		fmt.Fprintln(os.Stderr)
+		fs.PrintDefaults()
+	}
+}
+
 // commonFlags are the flags every command has, wired to a flag set.
 //
 // Every one of them is an override for something the config file can say. A flag that

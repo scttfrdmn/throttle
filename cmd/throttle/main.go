@@ -38,6 +38,17 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "version":
+		// No flags, so anything after it is a mistake worth naming rather than ignoring --
+		// including -h, which somebody types expecting to be told what the command does.
+		if len(os.Args) > 2 {
+			fmt.Fprintln(os.Stderr, "usage: throttle version")
+			fmt.Fprintln(os.Stderr, "\nPrints the version of this binary, and takes no flags. A build from a")
+			fmt.Fprintln(os.Stderr, "checkout reports the version being worked towards and the commit it came from.")
+			if os.Args[2] == "-h" || os.Args[2] == "--help" || os.Args[2] == "help" {
+				return
+			}
+			os.Exit(2)
+		}
 		fmt.Println(buildVersion())
 		return
 	case "init":
@@ -66,8 +77,16 @@ func main() {
 		usage()
 		return
 	default:
+		fmt.Fprintf(os.Stderr, "throttle: unknown command %q\n\n", os.Args[1])
 		usage()
 		os.Exit(2)
+	}
+	// Asking for help is not a failure. flag.Parse returns ErrHelp after it has already
+	// printed the usage, so the only thing left to do is exit successfully -- rather than
+	// print "throttle: flag: help requested" underneath the help somebody asked for and
+	// exit 1, which is the difference between a usable command and one no script can call.
+	if errors.Is(err, flag.ErrHelp) {
+		return
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "throttle:", err)
@@ -135,10 +154,15 @@ func defineCmd(args []string) error {
 		capPct   = fs.String("rollover-cap-pct", "", "cap positive carry at this percentage of the allocation")
 	)
 	common := addCommonFlags(fs)
+	setUsage(fs, "define -id <budget> [flags]",
+		"Stores one budget definition in the ledger, without a configuration file. WRITES.\n"+
+			"Fields not given as flags come from the configuration file if it describes this id.\n"+
+			"Most people should keep budgets in the file and use \"throttle config apply\".")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *id == "" {
+		fs.Usage()
 		return errors.New("define: -id is required")
 	}
 
@@ -263,6 +287,9 @@ func setIfPassedName(fs *flag.FlagSet, name string, apply func()) {
 func budgetsCmd(args []string) error {
 	fs := flag.NewFlagSet("budgets", flag.ContinueOnError)
 	common := addCommonFlags(fs)
+	setUsage(fs, "budgets [flags]",
+		"Lists the stored budget definitions: allocation, period rule, rollover, borrow window.\n"+
+			"Reads only.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -327,6 +354,10 @@ func statusCmd(args []string) error {
 		chain        = fs.Bool("chain", false, "also report every ancestor budget")
 	)
 	common := addCommonFlags(fs)
+	setUsage(fs, "status [flags]",
+		"Where a budget stands now: allocation, spent, reserved, banked or borrowed, and the\n"+
+			"rate that finishes the period on pace. Reads only, but opens the current period if\n"+
+			"the budget's term has begun and nothing has yet.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -349,12 +380,12 @@ func statusCmd(args []string) error {
 	statuses := []engine.Status{}
 	if *chain {
 		if statuses, err = eng.StatusChain(ctx, budgetID); err != nil {
-			return outsideTerm(ctx, store, budgetID, err)
+			return outsideTerm(ctx, store, cfg, budgetID, err)
 		}
 	} else {
 		st, err := eng.Status(ctx, budgetID)
 		if err != nil {
-			return outsideTerm(ctx, store, budgetID, err)
+			return outsideTerm(ctx, store, cfg, budgetID, err)
 		}
 		statuses = append(statuses, st)
 	}
@@ -400,11 +431,13 @@ func statusCmd(args []string) error {
 // A budget defined in advance of its start date, or one whose grant has expired, has no
 // current period. That is a fact about the calendar, not a fault, and the engine's own
 // message -- "no such period: <timestamp> precedes the anchor <timestamp>" -- is accurate
-// and useless to somebody trying to work out what to do. Any other error is passed
+// and useless to somebody trying to work out what to do.
+//
+// An unknown budget goes through missingBudget for the same reason. Any other error is passed
 // through untouched.
-func outsideTerm(ctx context.Context, store *sqlite.Store, budgetID string, err error) error {
+func outsideTerm(ctx context.Context, store *sqlite.Store, cfg config.Config, budgetID string, err error) error {
 	if !errors.Is(err, budget.ErrNoSuchPeriod) {
-		return err
+		return missingBudget(cfg, budgetID, err)
 	}
 	def, _, defErr := store.Definition(ctx, budgetID)
 	if defErr != nil {
@@ -462,6 +495,10 @@ func periodsCmd(args []string) error {
 	fs := flag.NewFlagSet("periods", flag.ContinueOnError)
 	id := fs.String("id", "", "budget id; the configured default budget if unset")
 	common := addCommonFlags(fs)
+	setUsage(fs, "periods [flags]",
+		"Lists the periods recorded for a budget, with their carry and closing balance. A period\n"+
+			"exists from the first time something asks where the budget stands, so a budget whose\n"+
+			"term has not begun has none. Reads only.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -480,6 +517,12 @@ func periodsCmd(args []string) error {
 		return err
 	}
 	defer store.Close()
+
+	// Checked before listing, because "no periods materialized yet" is true of a budget that
+	// does not exist and reads as reassurance about one that does.
+	if err := requireStoredBudget(ctx, store, cfg, budgetID); err != nil {
+		return err
+	}
 
 	periods, err := store.Periods(ctx, budgetID)
 	if err != nil {
@@ -528,6 +571,9 @@ func advanceCmd(args []string) error {
 	// unadvanced.
 	id := fs.String("id", "", "budget id; empty advances every budget")
 	common := addCommonFlags(fs)
+	setUsage(fs, "advance [flags]",
+		"Closes periods whose end has passed and opens the ones that follow, carrying any rollover.\n"+
+			"WRITES. Nothing is spent or refunded: this is the calendar catching up.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -546,11 +592,14 @@ func advanceCmd(args []string) error {
 	var changed []ledger.Period
 	if *id == "" {
 		changed, err = eng.AdvanceAll(ctx)
+		if err != nil {
+			return err
+		}
 	} else {
 		changed, err = eng.Advance(ctx, *id)
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return missingBudget(cfg, *id, err)
+		}
 	}
 	if len(changed) == 0 {
 		fmt.Println("no period transitions due")
@@ -572,6 +621,10 @@ func recoverCmd(args []string) error {
 	// As with advance: empty means every budget, and that stays the default.
 	id := fs.String("id", "", "budget id; empty recovers across every budget")
 	common := addCommonFlags(fs)
+	setUsage(fs, "recover [flags]",
+		"Releases reservations whose lease has expired, returning the headroom they hold. WRITES.\n"+
+			"For money held by a process that crashed between reserving and settling. A request still\n"+
+			"running keeps its lease alive, so this does not cut one off.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -591,6 +644,11 @@ func recoverCmd(args []string) error {
 	if *id == "" {
 		recovered, err = eng.RecoverAll(ctx)
 	} else {
+		// Same reasoning as periods: recovery across an unknown budget finds nothing, and
+		// "no expired reservations to recover" is a reassuring way to report a typo.
+		if err := requireStoredBudget(ctx, store, cfg, *id); err != nil {
+			return err
+		}
 		recovered, err = eng.Recover(ctx, *id)
 	}
 	if err != nil {
@@ -629,6 +687,10 @@ func reconcileCmd(args []string) error {
 		verbose   = fs.Bool("v", false, "explain every record examined, not only the ones that changed")
 	)
 	common := addCommonFlags(fs)
+	setUsage(fs, "reconcile [flags]",
+		"Repairs bookkeeping a crashed process left half-finished, by comparing recorded requests\n"+
+			"against the reservations they hold. WRITES unless -dry-run. A request whose cost is not\n"+
+			"known yet is left encumbered rather than given an invented one.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

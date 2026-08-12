@@ -37,6 +37,10 @@ func serveCmd(args []string) error {
 		limit  = fs.Int("limit", 0, "rows in the recent-request table; zero uses the configured default")
 	)
 	common := addCommonFlags(fs)
+	setUsage(fs, "serve [flags]",
+		"Runs the local dashboard until Ctrl-C. Read-only: no page it serves moves money, opens a\n"+
+			"period, or reconciles anything. It has no authentication and shows budget names, spend,\n"+
+			"models used, and per-request costs, so it binds loopback unless told otherwise.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -82,7 +86,7 @@ func serveCmd(args []string) error {
 
 	srv, err := dashboard.New(dashboard.Config{
 		Reporter:      rep,
-		Version:       version,
+		Version:       buildVersion(),
 		ActivityLimit: cfg.ActivityLimit,
 	})
 	if err != nil {

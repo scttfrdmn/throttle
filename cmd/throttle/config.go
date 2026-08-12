@@ -12,6 +12,7 @@ import (
 	"github.com/scttfrdmn/throttle/budget"
 	"github.com/scttfrdmn/throttle/config"
 	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
 	"github.com/scttfrdmn/throttle/ledger/sqlite"
 )
 
@@ -60,7 +61,8 @@ func configUsage() {
   diff   show what "apply" would change
   apply  store the configured budgets in the ledger
 
-Only "apply" writes. "throttle init" creates a starter file.`)
+Only "apply" writes. "throttle init" creates a starter file.
+Run "throttle config <subcommand> -h" for a subcommand's flags.`)
 }
 
 // configDiffCmd reports what apply would do, and writes nothing.
@@ -71,6 +73,8 @@ Only "apply" writes. "throttle init" creates a starter file.`)
 func configDiffCmd(args []string) error {
 	fs := flag.NewFlagSet("config diff", flag.ContinueOnError)
 	common := addCommonFlags(fs)
+	setUsage(fs, "config diff [flags]",
+		"Shows what \"throttle config apply\" would change. Writes nothing: this is apply's dry run.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -104,6 +108,10 @@ func configDiffCmd(args []string) error {
 func configApplyCmd(args []string) error {
 	fs := flag.NewFlagSet("config apply", flag.ContinueOnError)
 	common := addCommonFlags(fs)
+	setUsage(fs, "config apply [flags]",
+		"Stores the configured budgets in the ledger. WRITES, and it is the only config subcommand\n"+
+			"that does. A budget stored but absent from the file is left alone, never removed.\n"+
+			"Run \"throttle config diff\" first to see what would change.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -211,16 +219,13 @@ func reportPosition(ctx context.Context, eng *engine.Engine, budgetID string) {
 func renameCmd(args []string) error {
 	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
 	common := addCommonFlags(fs)
-	fs.Usage = func() {
-		// Flags before the arguments, because that is what the flag package accepts:
-		// parsing stops at the first non-flag word, so a -config after the new name would
-		// be read as a third argument. Written the way it has to be typed.
-		fmt.Fprintln(os.Stderr, `usage: throttle rename [flags] <budget> <new name>
-
-Changes the display name only. The budget's allocation, period, history, and children are
-untouched, and its id stays the same.`)
-		fs.PrintDefaults()
-	}
+	// Flags before the arguments, because that is what the flag package accepts: parsing stops
+	// at the first non-flag word, so a -config after the new name would be read as a third
+	// argument. Written the way it has to be typed.
+	setUsage(fs, "rename [flags] <budget> <new name>",
+		"Changes the display name only. WRITES, but only that: the allocation, period, history,\n"+
+			"and children are untouched, and the id stays the same -- so nothing recorded against\n"+
+			"this budget is rewritten or detached.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -244,7 +249,7 @@ untouched, and its id stays the same.`)
 
 	before, _, err := store.Definition(ctx, budgetID)
 	if err != nil {
-		return err
+		return missingBudget(cfg, budgetID, err)
 	}
 	if err := config.Rename(ctx, store, budgetID, name); err != nil {
 		return err
@@ -326,6 +331,10 @@ func configCheckCmd(args []string) error {
 	fs := flag.NewFlagSet("config check", flag.ContinueOnError)
 	common := addCommonFlags(fs)
 	quiet := fs.Bool("q", false, "print nothing on success; exit status alone reports the result")
+	setUsage(fs, "config check [flags]",
+		"Validates the configuration file and compares it to the stored budgets. Writes nothing.\n"+
+			"Exits non-zero if the file will not parse, or if it describes a budget differently from\n"+
+			"the way the ledger is governing it -- which makes it usable as a CI step.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -506,6 +515,9 @@ func tzText(def budget.Definition) string {
 func configShowCmd(args []string) error {
 	fs := flag.NewFlagSet("config show", flag.ContinueOnError)
 	common := addCommonFlags(fs)
+	setUsage(fs, "config show [flags]",
+		"Prints the configuration in effect and where each value came from: a flag, the file, or a\n"+
+			"built-in default. Writes nothing, and prints no credentials -- throttle stores none.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -528,6 +540,9 @@ func initCmd(args []string) error {
 		path  = fs.String("config", "", "where to write the file; the default location is used if unset")
 		force = fs.Bool("force", false, "replace an existing file")
 	)
+	setUsage(fs, "init [flags]",
+		"Writes a starter configuration file with one budget in it, then tells you what to edit.\n"+
+			"Writes that one file and nothing else: no databases, no credentials, no cloud resources.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -577,6 +592,46 @@ func requireBudget(id string, cfg config.Config, cmd string) (string, error) {
 			"file (\"throttle init\" writes one)", cmd)
 	}
 	return "", fmt.Errorf("%s: -id is required, or set defaults.budget in %s", cmd, cfg.Path)
+}
+
+// missingBudget turns "that budget does not exist" into something the reader can act on.
+//
+// The engine and the ledger each have their own ErrBudgetNotFound, and each message names the
+// layer that noticed: "engine: budget not found" from one command and "ledger: budget not
+// found" from the next, for the same situation. Which package raised it is not the reader's
+// problem, and the answer is usually one of two commands -- so it is said here, once.
+//
+// The configuration file is the interesting case. A budget named in the file but absent from
+// the ledger is a first run, not a typo, and the difference between "you have not applied your
+// config yet" and "no such budget" is the difference between a next step and a dead end.
+//
+// Any other error is returned untouched.
+func missingBudget(cfg config.Config, budgetID string, err error) error {
+	if !errors.Is(err, ledger.ErrBudgetNotFound) && !errors.Is(err, engine.ErrBudgetNotFound) {
+		return err
+	}
+	if _, inFile := cfg.Definition(budgetID); inFile {
+		return fmt.Errorf("budget %q is not stored yet, though %s defines it: "+
+			"\"throttle config apply\" stores it", budgetID, cfg.Path)
+	}
+	if cfg.Path == "" {
+		return fmt.Errorf("no budget %q is stored (\"throttle budgets\" lists the stored ones; "+
+			"\"throttle init\" starts a configuration file)", budgetID)
+	}
+	return fmt.Errorf("no budget %q is stored, and %s does not define it "+
+		"(\"throttle budgets\" lists the stored ones)", budgetID, cfg.Path)
+}
+
+// requireStoredBudget reports that a budget exists before a command acts as though it does.
+//
+// For the commands whose answer for an unknown budget would otherwise be indistinguishable
+// from a true one: "no periods materialized yet" and "no expired reservations to recover" are
+// both correct about a budget that does not exist, and both read as reassurance.
+func requireStoredBudget(ctx context.Context, store *sqlite.Store, cfg config.Config, budgetID string) error {
+	if _, _, err := store.Definition(ctx, budgetID); err != nil {
+		return missingBudget(cfg, budgetID, err)
+	}
+	return nil
 }
 
 // configSourceText names where configuration came from, for an error that suggests editing

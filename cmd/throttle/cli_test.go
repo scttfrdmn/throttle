@@ -673,3 +673,188 @@ func TestUsageVocabulary(t *testing.T) {
 		}
 	}
 }
+
+// Every command answers -h, and says so successfully.
+//
+// Asking a tool what it does is not a failure, and the flag package's default behaviour --
+// print the usage, then return ErrHelp so the caller reports an error and exits nonzero -- is
+// the difference between a command a script can call and one it cannot. The synopsis is
+// checked too, because "Usage of status:" names a flag set rather than anything anyone types.
+func TestEveryCommandHasHelp(t *testing.T) {
+	c := newCLI(t)
+
+	commands := [][]string{
+		{"init"}, {"config"}, {"config", "check"}, {"config", "show"}, {"config", "diff"},
+		{"config", "apply"}, {"define"}, {"budgets"}, {"rename"}, {"status"}, {"periods"},
+		{"advance"}, {"recover"}, {"reconcile"}, {"serve"}, {"version"},
+	}
+	for _, cmd := range commands {
+		name := strings.Join(cmd, " ")
+		out, code := c.run(append(cmd, "-h")...)
+		if code != 0 {
+			t.Errorf("throttle %s -h exited %d, want 0:\n%s", name, code, out)
+		}
+		if !strings.Contains(out, "usage: throttle "+name) {
+			t.Errorf("throttle %s -h does not open with its own synopsis:\n%s", name, out)
+		}
+		// The flag package's heading, which names an internal flag set and tells the reader
+		// nothing about the command.
+		if strings.Contains(out, "Usage of ") {
+			t.Errorf("throttle %s -h uses the flag package's default heading:\n%s", name, out)
+		}
+		if strings.Contains(out, "help requested") {
+			t.Errorf("throttle %s -h reports asking for help as an error:\n%s", name, out)
+		}
+	}
+}
+
+// A command that writes says so in its own help.
+//
+// Six commands mutate durable state and nine do not, and the ones that do are exactly the ones
+// somebody wants to be sure about before running them against a real ledger. Nothing infers
+// this from the code, so it is asserted: a new mutating command that arrives without the word
+// fails here.
+func TestMutatingCommandsSoundMutating(t *testing.T) {
+	c := newCLI(t)
+
+	writes := [][]string{
+		{"config", "apply"}, {"define"}, {"rename"}, {"advance"}, {"recover"}, {"reconcile"},
+	}
+	for _, cmd := range writes {
+		out, _ := c.run(append(cmd, "-h")...)
+		if !strings.Contains(out, "WRITES") {
+			t.Errorf("throttle %s -h does not say it writes:\n%s", strings.Join(cmd, " "), out)
+		}
+	}
+
+	// And the read-only ones do not claim to.
+	reads := [][]string{{"config", "check"}, {"config", "show"}, {"config", "diff"}, {"serve"}}
+	for _, cmd := range reads {
+		out, _ := c.run(append(cmd, "-h")...)
+		if strings.Contains(out, "WRITES") {
+			t.Errorf("throttle %s -h says it writes:\n%s", strings.Join(cmd, " "), out)
+		}
+	}
+}
+
+// An unknown budget is named as such, with the next step, on every command that takes one.
+//
+// The failure this replaces was worse than a bad message. "throttle periods -id typo" printed
+// "no periods materialized yet" and exited 0, and "throttle recover -id typo" printed "no
+// expired reservations to recover" -- both true of a budget that does not exist, and both
+// read as reassurance about one that does.
+func TestUnknownBudgetIsNamed(t *testing.T) {
+	c := newCLI(t)
+	c.ok("init")
+	c.ok("config", "apply")
+
+	for _, args := range [][]string{
+		{"status", "-id", "typo"},
+		{"periods", "-id", "typo"},
+		{"recover", "-id", "typo"},
+		{"advance", "-id", "typo"},
+		{"rename", "typo", "New name"},
+	} {
+		out := c.fails(args...)
+		if !strings.Contains(out, `"typo"`) {
+			t.Errorf("throttle %s does not name the budget:\n%s", strings.Join(args, " "), out)
+		}
+		if !strings.Contains(out, "throttle budgets") {
+			t.Errorf("throttle %s does not say how to see the stored budgets:\n%s",
+				strings.Join(args, " "), out)
+		}
+		// Which package noticed is not the reader's problem.
+		for _, leak := range []string{"engine:", "ledger:", "sqlite:"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("throttle %s leaks the internal layer %q:\n%s",
+					strings.Join(args, " "), leak, out)
+			}
+		}
+	}
+}
+
+// A budget the file defines but nothing has stored is a first run, not a typo.
+//
+// The two situations produce the same error from the ledger and want opposite things said
+// about them: one needs "throttle config apply", the other needs to know the name is wrong.
+func TestBudgetDefinedButNotAppliedSaysToApply(t *testing.T) {
+	c := newCLI(t)
+	c.ok("init")
+
+	// Deliberately not applied.
+	out := c.fails("status")
+	if !strings.Contains(out, "throttle config apply") {
+		t.Errorf("status before apply does not say to apply:\n%s", out)
+	}
+	if !strings.Contains(out, "not stored yet") {
+		t.Errorf("status before apply does not distinguish unstored from unknown:\n%s", out)
+	}
+}
+
+// Errors stay sentences, on every path a new user is likely to hit first.
+//
+// Not an assertion about wording, which will change. A panic trace, a bare Go error value, or
+// a wrapped chain of package prefixes are each a sign that a failure reached the terminal
+// without anybody having decided what to say about it.
+func TestErrorPathsStayReadable(t *testing.T) {
+	c := newCLI(t)
+	c.ok("init")
+
+	malformed := filepath.Join(c.home, "malformed.yaml")
+	c.write(malformed, "version: 1\nbudgets: [not, a, map]\n")
+
+	badMoney := filepath.Join(c.home, "money.yaml")
+	c.write(badMoney, "version: 1\nbudgets:\n  a:\n    amount: twelve dollars\n")
+
+	future := filepath.Join(c.home, "version.yaml")
+	c.write(future, "version: 99\nbudgets: {}\n")
+
+	// A ledger path throttle cannot open. Not a missing directory -- one of those is created,
+	// because a configured path names where a database is meant to live -- but a path whose
+	// parent is a regular file, which no amount of MkdirAll will fix.
+	blocked := filepath.Join(c.home, "a-file")
+	c.write(blocked, "not a directory\n")
+
+	for _, args := range [][]string{
+		{"config", "check", "-config", filepath.Join(c.home, "absent.yaml")},
+		{"config", "check", "-config", malformed},
+		{"config", "check", "-config", badMoney},
+		{"config", "check", "-config", future},
+		{"status", "-id", "typo"},
+		{"reconcile"},
+		{"budgets", "-db", filepath.Join(blocked, "ledger.db")},
+	} {
+		out := c.fails(args...)
+		name := strings.Join(args, " ")
+		if strings.Contains(out, "goroutine ") || strings.Contains(out, "panic:") {
+			t.Errorf("throttle %s panicked:\n%s", name, out)
+		}
+		if strings.Count(out, "\n") > 8 {
+			t.Errorf("throttle %s printed a wall of text:\n%s", name, out)
+		}
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("throttle %s failed silently", name)
+		}
+	}
+}
+
+// Asking for the version is one thing, and asking for it twice is the same thing.
+//
+// The dashboard footer and this command read one variable, so a screenshot and a bug report
+// cannot disagree about which build they describe. What that value is depends on how the
+// binary was built and is not pinned here; that it is a plausible version, and identical in
+// both places, is.
+func TestVersionIsOneValue(t *testing.T) {
+	c := newCLI(t)
+	got := strings.TrimSpace(c.ok("version"))
+	if got == "" {
+		t.Fatal("throttle version printed nothing")
+	}
+	if !strings.HasPrefix(got, "0.1.0") && !strings.HasPrefix(got, "v0.1.0") {
+		t.Errorf("version %q does not look like this project's version", got)
+	}
+	// A development build says so rather than claiming to be a release.
+	if got == "(devel)" || strings.HasPrefix(got, "v0.0.0-") {
+		t.Errorf("version %q reports a placeholder as though it were a release", got)
+	}
+}
