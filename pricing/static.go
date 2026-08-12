@@ -191,10 +191,16 @@ func (s *Static) capture(id usage.ModelIdentity, at time.Time) (CapturedQuote, e
 		AccessProvider:  price.AccessProvider,
 		ProviderModelID: price.ProviderModelID,
 		Region:          id.Region,
-		ServiceTier:     id.ServiceTier,
-		Rates:           rates,
-		Provenance:      price.Provenance,
-		CapturedAt:      at,
+		// The row's tier, not the requested one. A tier-less row matches a request
+		// naming any tier -- that is what "empty matches any value" on a Price means --
+		// so copying the requested tier here would make the quote claim to be qualified
+		// for a tier it was never priced for, and the false claim would then be
+		// indistinguishable from a real tier-specific capture at settlement. See
+		// CapturedQuote.ServiceTier and issue #30.
+		ServiceTier: price.ServiceTier,
+		Rates:       rates,
+		Provenance:  price.Provenance,
+		CapturedAt:  at,
 	}, nil
 }
 
@@ -224,9 +230,18 @@ func (s *Static) tiers(id usage.ModelIdentity, at time.Time, exclude string) map
 		alt.ServiceTier = tier
 		// Resolved through find, so tier-specific and general entries are ranked by
 		// the same specificity rules that chose the primary.
-		if q, err := s.capture(alt, at); err == nil {
-			out[tier] = q
+		q, err := s.capture(alt, at)
+		if err != nil {
+			continue
 		}
+		// find may have fallen through to a row that is not tier-specific -- if the
+		// tier's own row is not yet in effect, say. Keying that under this tier would
+		// file general rates as though the tier had been priced, which is exactly the
+		// mislabelling the primary capture no longer does.
+		if q.ServiceTier != tier {
+			continue
+		}
+		out[tier] = q
 	}
 	if len(out) == 0 {
 		return nil

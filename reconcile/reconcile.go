@@ -986,7 +986,14 @@ func replay(rec activity.Record) (usage.Cost, quoteRef) {
 	if !rec.Quote.Valid() {
 		return usage.UnknownCost("no quote was captured for this request, so its usage cannot be priced"), quoteRef{}
 	}
-	q := rec.Quote.For(rec.Identity)
+	q, tierErr := rec.Quote.For(rec.Identity)
+	if tierErr != nil {
+		// The tier that served the request was never priced. There is no catalog here to
+		// ask, and that is the point: a record stranded by missing pricing knowledge must
+		// not become priceable merely because the live catalog has since learned the
+		// tier, or a repair would price history at rates the request never ran under.
+		return usage.UnknownCost(tierErr.Error()), quoteRef{}
+	}
 	priced, _ := q.Price(rec.ActualUsage)
 	return priced.Cost, quoteRef{
 		source:     q.Provenance.Source,

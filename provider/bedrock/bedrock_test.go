@@ -728,6 +728,141 @@ func TestConverseUsesResponseTierForPricing(t *testing.T) {
 	}
 }
 
+// A tier the catalog never priced settles as unresolved on Bedrock too.
+//
+// Issue #30 is a property of the shared quote, not of one adapter, and it predates the
+// OpenAI adapter entirely -- so the refusal is proved here as well, on a catalog that
+// prices this model by tier. Bedrock's own enum already carries "reserved" alongside
+// the tiers these fixtures price, and there is nothing stopping a future one.
+func TestConverseRefusesAnUnpricedServiceTier(t *testing.T) {
+	cat, err := pricing.NewStatic(
+		pricing.Price{
+			AccessProvider:  "aws-bedrock",
+			ProviderModelID: sonnetID,
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens:  pricing.PerMillion(usage.InputTokens, dollars(t, "3.00")),
+				usage.OutputTokens: pricing.PerMillion(usage.OutputTokens, dollars(t, "15.00")),
+			},
+			Provenance: pricing.Provenance{Source: "test"},
+		},
+		pricing.Price{
+			AccessProvider:  "aws-bedrock",
+			ProviderModelID: sonnetID,
+			ServiceTier:     "flex",
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens:  pricing.PerMillion(usage.InputTokens, dollars(t, "1.50")),
+				usage.OutputTokens: pricing.PerMillion(usage.OutputTokens, dollars(t, "7.50")),
+			},
+			Provenance: pricing.Provenance{Source: "test-flex"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewStatic: %v", err)
+	}
+
+	// Anti-vacuous: on the tiers this catalog does price, the identical usage settles at
+	// a confident figure. Both figures are named so a regression to either is diagnosable.
+	admitted := dollars(t, "3.00")
+	base := newHarness(t, "1000", func(c *bedrock.Config) { c.Catalog = cat })
+	base.api.out = response(1_000_000, 0)
+	baseline, err := base.client.Converse(context.Background(), bedrock.Request{
+		BudgetID: "team", RequestID: "req-baseline", Input: request(sonnetID, aws.Int32(10)),
+	})
+	if err != nil {
+		t.Fatalf("baseline Converse: %v", err)
+	}
+	if !baseline.Cost.Known() || baseline.Charge.ActualCost != admitted {
+		t.Fatalf("the baseline settled %s (%s); this test needs a known %s to prove the refusal "+
+			"is not vacuous", baseline.Charge.ActualCost, baseline.Cost.State(), admitted)
+	}
+
+	h := newHarness(t, "1000", func(c *bedrock.Config) { c.Catalog = cat })
+	out := response(1_000_000, 0)
+	// A tier nobody priced. Deliberately not one of the enum's current values: the fix
+	// has to hold for whatever AWS names next, not for a list written today.
+	out.ServiceTier = &brtypes.ServiceTier{Type: brtypes.ServiceTierType("dedicated-2027")}
+	h.api.out = out
+
+	res, err := h.client.Converse(context.Background(), bedrock.Request{
+		BudgetID: "team", RequestID: "req-unpriced-tier", Input: request(sonnetID, aws.Int32(10)),
+	})
+	if !errors.Is(err, bedrock.ErrCostUnresolved) {
+		t.Fatalf("Converse error = %v, want ErrCostUnresolved", err)
+	}
+
+	// The call happened: usage and the observed tier are both kept.
+	if got, _ := res.Usage.Get(usage.InputTokens); got != 1_000_000 {
+		t.Errorf("InputTokens = %d, want 1000000: the request ran and its usage is a fact", got)
+	}
+	if res.Identity.ServiceTier != "dedicated-2027" {
+		t.Errorf("ServiceTier = %q, want the tier the provider reported serving", res.Identity.ServiceTier)
+	}
+
+	// The cost is not known, and specifically is not the admitted rate.
+	if res.Cost.Known() {
+		t.Error("a tier with no captured rates must not settle as a known cost")
+	}
+	if res.Cost.Amount == admitted {
+		t.Errorf("cost = %s: the admitted rates were substituted for a tier they do not price", admitted)
+	}
+	if res.Cost.Amount == dollars(t, "1.50") {
+		t.Error("cost priced at the flex rate, which is a tier this request was not served on")
+	}
+	if !strings.Contains(res.Cost.Reason, "dedicated-2027") {
+		t.Errorf("reason %q must name the tier that served the call", res.Cost.Reason)
+	}
+
+	// The hold stays encumbered rather than released: money moved.
+	if !res.Unresolved {
+		t.Error("the result should be marked unresolved")
+	}
+	if got := h.totals(t).Reserved; got == 0 {
+		t.Error("Reserved = 0: an unresolved cost must keep its hold encumbered")
+	}
+	if got := h.totals(t).Spent; got != 0 {
+		t.Errorf("Spent = %s, want 0: nothing may be charged for a cost that is not known", got)
+	}
+}
+
+// Bedrock's fixtures price no tier separately, so a response reporting any tier still
+// settles as a known cost.
+//
+// This is the other half of #30 and the reason it is not a strictness change: a catalog
+// that priced no tier has asserted that tier does not affect this model's price, and
+// throttle has to keep taking it at its word. Only a model whose price *does* vary by
+// tier makes an unpriced tier unknowable.
+func TestConverseTierAgnosticPricingStillSettles(t *testing.T) {
+	for _, tier := range []brtypes.ServiceTierType{
+		brtypes.ServiceTierTypeDefault,
+		brtypes.ServiceTierTypePriority,
+		brtypes.ServiceTierTypeFlex,
+		brtypes.ServiceTierTypeReserved,
+		brtypes.ServiceTierType("a-tier-from-2030"),
+	} {
+		t.Run(string(tier), func(t *testing.T) {
+			h := newHarness(t, "1000")
+			out := response(1000, 500)
+			out.ServiceTier = &brtypes.ServiceTier{Type: tier}
+			h.api.out = out
+
+			res, err := h.client.Converse(context.Background(), bedrock.Request{
+				BudgetID: "team", RequestID: "req-" + string(tier), Input: request(sonnetID, aws.Int32(2000)),
+			})
+			if err != nil {
+				t.Fatalf("Converse: %v", err)
+			}
+			if !res.Cost.Known() {
+				t.Errorf("cost = %s (%s), want a known cost: the fixtures price this model without "+
+					"reference to tier, so there is no tier-specific rate to be missing: %s",
+					res.Cost.Amount, res.Cost.State(), res.Cost.Reason)
+			}
+			if res.Identity.ServiceTier != string(tier) {
+				t.Errorf("ServiceTier = %q, want %q recorded from the response", res.Identity.ServiceTier, tier)
+			}
+		})
+	}
+}
+
 // A monitored budget must record spend without ever blocking, and the recorded
 // mode must say so -- otherwise a reader cannot tell that the ceiling did not apply.
 func TestConverseMonitorModeRecordsWithoutBlocking(t *testing.T) {

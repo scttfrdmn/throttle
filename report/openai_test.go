@@ -258,6 +258,105 @@ func TestUnpricedOpenAIModelIsNeverZero(t *testing.T) {
 	}
 }
 
+// A request served on a service tier that was never priced reports neither zero nor the
+// rate that was priced.
+//
+// The reporting half of #30. This record is the harder case than an unpriced model: the
+// captured quote is valid, it carries rates, and those rates would produce a concrete
+// figure. Reporting has to show that the amount is not known rather than showing the one
+// number that happens to be at hand, because the tier that actually ran re-prices every
+// dimension and the frozen rates bound the real cost in neither direction.
+func TestUncapturedServiceTierRendersAsUnresolvedNotTheKnownRate(t *testing.T) {
+	w := newWorld(t)
+	p := w.define(monthly("research", "", dollars(1000)))
+	at := w.now.Add(-time.Hour)
+
+	// What the frozen rates would have charged, if reporting were to reach for them.
+	// Asserted against below, so this test fails if the refused figure ever surfaces.
+	priced := cents(6)
+
+	const served = "turbo-2027"
+	reason := `gpt-5.1 was served on service tier "` + served + `", which was not among the ` +
+		`tiers priced when this request was admitted (captured: priority)`
+
+	rec := openAIRecord("uncaptured-tier", "research", p.ID, priced, at)
+	rec.Identity.ServiceTier = served // the tier that ran, not the one that was priced
+	rec.Estimate.Cost = usage.KnownCost(priced * 2)
+	rec.ActualCost = usage.UnknownCost(reason)
+	rec.Reserved = priced * 2
+	rec.Status = activity.StatusUnresolved
+	rec.Outcome = activity.OutcomeUnpriced
+
+	// Anti-vacuous: the same record, priced from the frozen rates as the old fallback
+	// would have, renders as a plain figure. So the assertions below are about the
+	// completeness of this cost and not about a formatter that cannot print money.
+	fallback := amountOf(usage.KnownCost(priced), activity.StatusSettled)
+	if got := fallback.Text(money.Money.CentsString); got != priced.CentsString() {
+		t.Fatalf("the pre-#30 fallback amount renders as %q, want %q: this test cannot prove the new "+
+			"behavior refuses a figure it was never able to produce", got, priced.CentsString())
+	}
+
+	w.record(rec)
+
+	page, err := w.rep.Activity(w.ctx, ActivityQuery{BudgetID: "research"})
+	if err != nil {
+		t.Fatalf("Activity: %v", err)
+	}
+	e := page.Events[0]
+
+	if n := len(e.Usage); n != 4 {
+		t.Errorf("got %d usage dimensions, want 4: the call happened and its usage is known", n)
+	}
+
+	if e.Actual.State != CostUnresolved {
+		t.Errorf("Actual.State = %q, want unresolved: the tier that served this call had no frozen rate",
+			e.Actual.State)
+	}
+	txt := e.Actual.Text(money.Money.CentsString)
+	if txt != "unresolved" {
+		t.Errorf("an uncaptured-tier request renders as %q, want %q", txt, "unresolved")
+	}
+	// Item 11: not zero. Item 12: not the amount the priced tier would have charged.
+	if strings.Contains(txt, "0.00") {
+		t.Errorf("rendered as %q: a request that consumed tokens must not read as free", txt)
+	}
+	if strings.Contains(txt, priced.CentsString()) {
+		t.Errorf("rendered as %q, which is the %s the *priced* tier would have charged: the rate for "+
+			"the tier that actually ran was never captured", txt, priced.CentsString())
+	}
+	if e.Actual.Value != 0 {
+		t.Errorf("Actual.Value = %s, want 0: no part of this cost is established", e.Actual.Value)
+	}
+	if !strings.Contains(e.Actual.Reason, served) {
+		t.Errorf("Actual.Reason = %q, should name the tier it could not price", e.Actual.Reason)
+	}
+
+	// The hold stays encumbered and stays out of spend, so the budget does not hand the
+	// same headroom out twice for money already spent.
+	if e.Reserved != priced*2 {
+		t.Errorf("Reserved = %s, want %s: the hold on an unresolved cost stands", e.Reserved, priced*2)
+	}
+	if page.Summary.Complete {
+		t.Error("a page holding an unresolved request must not report a complete total")
+	}
+	if page.Summary.Unresolved != 1 {
+		t.Errorf("Summary.Unresolved = %d, want 1: an uncaptured tier is a liability to chase, "+
+			"not a settled row", page.Summary.Unresolved)
+	}
+
+	sum, err := w.rep.Summary(w.ctx, "research")
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if sum.Position.Spent != 0 {
+		t.Errorf("Position.Spent = %s, want 0: an unresolved cost is not spend", sum.Position.Spent)
+	}
+	if sum.Health.Unresolved != 1 {
+		t.Errorf("Health.Unresolved = %d, want 1: the budget must show that one request's cost is "+
+			"outstanding", sum.Health.Unresolved)
+	}
+}
+
 // Every facet groups a mixed-provider budget correctly, and the OpenAI rows land where
 // they belong without a single provider-specific branch.
 func TestFacetsGroupMixedProviders(t *testing.T) {

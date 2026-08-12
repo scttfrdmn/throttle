@@ -555,7 +555,16 @@ func (c *Client) priceActual(ctx context.Context, quote pricing.CapturedQuote, i
 	if quote.Valid() {
 		// For picks the captured tier the provider actually served on, which can
 		// differ from the one requested and can price differently.
-		priced, err := quote.For(id).Price(u)
+		//
+		// A tier no rate was frozen for is refused rather than priced at the admitted
+		// rates. The call happened and cost money, so the answer is an unknown cost
+		// that leaves the reservation encumbered -- not a confident figure computed
+		// from a price sheet this request did not run under.
+		applicable, tierErr := quote.For(id)
+		if tierErr != nil {
+			return usage.UnknownCost(tierErr.Error()), tierErr
+		}
+		priced, err := applicable.Price(u)
 		return priced.Cost, err
 	}
 	q, err := c.catalog.Quote(ctx, id, u, c.engine.Now())

@@ -153,9 +153,11 @@ func OpenAI() []pricing.Price {
 			flex:     [4]string{"0.125", "0.0125", "", "1.00"},
 		},
 		{
-			// On no Flex table, so it has no flex row here. A flex request for this
-			// model prices from the tier-less row, which is the standard rate -- the
-			// same fallback For() makes for any tier it has no alternate for.
+			// On no Flex table, so it has no flex row here. A request this model serves
+			// on flex therefore has no frozen rate for the tier that ran, and settles as
+			// unresolved rather than at the standard rate -- see CapturedQuote.For. That
+			// is the honest outcome: this model is priced by tier, and the tiers that
+			// were priced bound a flex request's cost in neither direction.
 			id:       "gpt-4o-mini",
 			standard: [4]string{"0.15", "0.075", "", "0.60"},
 			priority: [4]string{"0.25", "0.125", "", "1.00"},

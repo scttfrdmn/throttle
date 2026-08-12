@@ -193,7 +193,9 @@ price actual usage at settlement:
 ```text
 access_provider
 provider_model_id        # verbatim
-region / service_tier    # the access dimensions the rates were selected for
+region / service_tier    # the access dimensions the rates were priced FOR, not
+                         # the ones that were requested; empty service_tier means
+                         # the rates do not vary by tier
 rates {dimension: rate}  # integer numerator over integer unit; copied, not referenced
 provenance               # source, version, effective_from, currency
 captured_at
@@ -215,6 +217,16 @@ caller did not request, at a different price. The alternates are collected in th
 **same catalog read** as the primary quote, so selecting one at settlement is a
 replay of frozen rates rather than a fresh query. Alternates are one level deep: an
 alternate never carries its own.
+
+Looking a served tier up in a quote **never falls back to a different tier's rates**.
+A quote covers a served tier when the tier is the one its own rates were priced for,
+when the tier is a frozen alternate, or when the rates carry no tier and no tier was
+priced separately — the last meaning the model's price does not vary by tier, so the
+frozen rates do cover whatever served the call. Anything else is a lookup failure, and
+the cost becomes unresolved rather than being reported as known at the admitted rate.
+The captured rates are not a bound on an unpriced tier's charge in either direction,
+so completeness follows from what was known and not from which direction a guess would
+err. See [`architecture.md`](architecture.md#a-quote-is-captured-then-replayed).
 
 Pricing a quote accumulates every dimension of the charge as one exact rational and
 rounds once — see

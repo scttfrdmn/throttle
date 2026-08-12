@@ -726,6 +726,93 @@ func TestUnpricedDimensionStaysUnresolved(t *testing.T) {
 	}
 }
 
+// A request served on a tier the captured quote never priced stays unresolved through
+// reconciliation, and does not become priceable because the live catalog has since
+// learned the tier.
+//
+// The two invariants meet here. #30 says a tier with no frozen rate is unpriceable;
+// the immutable-quote rule says a repair replays admission-time knowledge. Together
+// they mean this record can only be resolved by supplying an authoritative rate for
+// what actually ran -- which is a product decision, not something today's catalog gets
+// to do on history's behalf. This package holds no catalog at all, which is what makes
+// that guarantee structural rather than a rule somebody has to remember.
+func TestUncapturedTierStaysUnresolvedThroughReconciliation(t *testing.T) {
+	f := newFixture(t)
+	res := f.reserve("req-tier", dollars(1), time.Minute)
+	rec := f.begin("req-tier", res)
+
+	// The quote was captured for a model priced by tier, and the provider served the
+	// request on one that was never priced.
+	q := quote()
+	q.ServiceTier = "standard"
+	q.Alternates = map[string]pricing.CapturedQuote{"flex": q}
+	rec.Quote = q
+	rec.Identity = identity()
+	rec.Identity.ServiceTier = "dedicated-2027"
+	rec.ActualUsage = observedUsage()
+	f.complete(rec)
+
+	// Anti-vacuous: the frozen rates do price this usage, to the figure every other
+	// replay test settles at. That figure is what the repair must refuse to claim.
+	if priced, err := q.Price(observedUsage()); err != nil || priced.Cost.Amount != observedCost {
+		t.Fatalf("the captured rates priced %s (err %v); this test needs a known %s",
+			priced.Cost.Amount.CentsString(), err, observedCost.CentsString())
+	}
+
+	got, err := f.reconciler(reconcile.Config{}).Reconcile(context.Background(), "req-tier")
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got.Class != reconcile.ClassUnresolved {
+		t.Fatalf("class = %q, want %q (%s)", got.Class, reconcile.ClassUnresolved, got.Detail)
+	}
+	if got.Reason != reconcile.ReasonPricingUnresolved {
+		t.Errorf("reason = %q, want %q", got.Reason, reconcile.ReasonPricingUnresolved)
+	}
+	if got.Money != reconcile.MoneyNone {
+		t.Fatalf("money = %q: a request whose tier was never priced may not settle", got.Money)
+	}
+	if state := f.reservation(res.ID).State; state != ledger.StatePending {
+		t.Errorf("state = %q, want the hold left encumbered", state)
+	}
+	if spent := f.totals("team").Spent; spent != 0 {
+		t.Errorf("spend = %s, want nothing charged", spent.CentsString())
+	}
+
+	out := f.get("req-tier")
+	if out.Status != activity.StatusUnresolved {
+		t.Errorf("status = %q, want %q", out.Status, activity.StatusUnresolved)
+	}
+	if out.ActualCost.Known() {
+		t.Errorf("cost = %v, want an unresolved cost", out.ActualCost)
+	}
+	if out.ActualCost.Amount == observedCost {
+		t.Errorf("cost = %s: the repair priced a tier by rates captured for another one",
+			observedCost.CentsString())
+	}
+	if !strings.Contains(out.ActualCost.Reason, "dedicated-2027") {
+		t.Errorf("reason %q must name the tier that served the call, so an operator knows what "+
+			"pricing would resolve it", out.ActualCost.Reason)
+	}
+	// The observed tier survives the repair: overwriting it with the admitted one would
+	// erase the only record of what actually needs pricing.
+	if out.Identity.ServiceTier != "dedicated-2027" {
+		t.Errorf("recorded tier = %q, want the observed one preserved", out.Identity.ServiceTier)
+	}
+
+	// Repeated passes converge on the same answer rather than eventually settling.
+	again, err := f.reconciler(reconcile.Config{}).Reconcile(context.Background(), "req-tier")
+	if err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+	if again.Class != reconcile.ClassUnresolved || again.Money != reconcile.MoneyNone {
+		t.Errorf("second pass = %q/%q, want it still unresolved with no money moved", again.Class, again.Money)
+	}
+	if spent := f.totals("team").Spent; spent != 0 {
+		t.Errorf("spend after a second pass = %s, want nothing charged", spent.CentsString())
+	}
+}
+
 // --- 11. AgentCore awaiting delayed session usage ------------------------
 
 // TestAwaitingExternalUsageIsNotCrashDamage is the distinction the classifier exists

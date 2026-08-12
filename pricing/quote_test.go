@@ -2,7 +2,9 @@ package pricing_test
 
 import (
 	"context"
+	"errors"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 
@@ -421,7 +423,11 @@ func TestCapturedQuoteCarriesTierAlternates(t *testing.T) {
 	served.ServiceTier = "flex"
 
 	u := usage.New(map[usage.Dimension]int64{usage.InputTokens: 1_000_000})
-	priced, err := quote.For(served).Price(u)
+	applicable, err := quote.For(served)
+	if err != nil {
+		t.Fatalf("For(flex): %v, want the captured flex alternate", err)
+	}
+	priced, err := applicable.Price(u)
 	if err != nil {
 		t.Fatalf("Price: %v", err)
 	}
@@ -435,23 +441,295 @@ func TestCapturedQuoteCarriesTierAlternates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnmarshalQuote: %v", err)
 	}
-	after, err := back.For(served).Price(u)
+	restored, err := back.For(served)
+	if err != nil {
+		t.Fatalf("For(flex) after restart: %v", err)
+	}
+	after, err := restored.Price(u)
 	if err != nil {
 		t.Fatalf("Price after restart: %v", err)
 	}
 	if after.Cost.Amount != priced.Cost.Amount {
 		t.Errorf("flex cost after restart = %s, want %s", after.Cost.Amount, priced.Cost.Amount)
 	}
+}
 
-	// An unknown tier falls back to the admitted rates rather than to nothing.
-	odd := sonnetIdentity()
-	odd.ServiceTier = "tier-invented-later"
-	fallback, err := quote.For(odd).Price(u)
+// A tier no rate was frozen for is unpriceable, and specifically is not priced at
+// the rates the request was admitted under.
+//
+// This is issue #30. The old behaviour returned the primary quote for any tier it did
+// not recognize, so a request served on a tier invented after capture settled at the
+// standard rate and reported cost: known. The assertion below is deliberately made in
+// two halves: first that the admitted rates would have produced a confident $3.00 --
+// so the test cannot pass merely because pricing broke -- and then that the lookup
+// refuses to produce it.
+func TestUnknownServiceTierIsUnpriceableRatherThanAdmittedRates(t *testing.T) {
+	cat, err := pricing.NewStatic(
+		pricing.Price{
+			AccessProvider:  "aws-bedrock",
+			ProviderModelID: sonnetIdentity().ProviderModelID,
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "3.00")),
+			},
+			Provenance: pricing.Provenance{Source: "test"},
+		},
+		pricing.Price{
+			AccessProvider:  "aws-bedrock",
+			ProviderModelID: sonnetIdentity().ProviderModelID,
+			ServiceTier:     "flex",
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "1.50")),
+			},
+			Provenance: pricing.Provenance{Source: "test-flex"},
+		},
+	)
 	if err != nil {
-		t.Fatalf("Price with unknown tier: %v", err)
+		t.Fatalf("NewStatic: %v", err)
 	}
-	if want := dollars(t, "3.00"); fallback.Cost.Amount != want {
-		t.Errorf("unknown-tier cost = %s, want the admitted %s", fallback.Cost.Amount, want)
+	quote, err := cat.Capture(sonnetIdentity(), at)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	u := usage.New(map[usage.Dimension]int64{usage.InputTokens: 1_000_000})
+
+	// Anti-vacuous: the rates the old fallback would have used are present and price
+	// this usage to a confident figure. That figure is what must not be reported.
+	admitted, err := quote.Price(u)
+	if err != nil {
+		t.Fatalf("pricing at the admitted rates: %v", err)
+	}
+	if want := dollars(t, "3.00"); !admitted.Cost.Known() || admitted.Cost.Amount != want {
+		t.Fatalf("the admitted rates priced %s (%s); this test needs them to price a known %s",
+			admitted.Cost.Amount, admitted.Cost.State(), want)
+	}
+
+	served := sonnetIdentity()
+	served.ServiceTier = "turbo-invented-later"
+
+	applicable, err := quote.For(served)
+	if err == nil {
+		t.Fatalf("For(%q) returned a quote for %s, want a refusal: pricing a tier by rates "+
+			"it was not captured for is the bug", served.ServiceTier, applicable.ProviderModelID)
+	}
+	if !errors.Is(err, pricing.ErrTierNotCaptured) {
+		t.Errorf("err = %v, want ErrTierNotCaptured", err)
+	}
+
+	// The reason has to name the tier and what was known, or an operator cannot tell
+	// what to add to the catalog.
+	var tierErr *pricing.TierNotCapturedError
+	if !errors.As(err, &tierErr) {
+		t.Fatalf("err = %v, want a *TierNotCapturedError", err)
+	}
+	if tierErr.ServiceTier != served.ServiceTier {
+		t.Errorf("ServiceTier = %q, want the tier that served the call", tierErr.ServiceTier)
+	}
+	if tierErr.ProviderModelID != sonnetIdentity().ProviderModelID {
+		t.Errorf("ProviderModelID = %q, want the model whose rates were frozen", tierErr.ProviderModelID)
+	}
+	if !slices.Contains(tierErr.Captured, "flex") {
+		t.Errorf("Captured = %v, want it to name the tiers that were frozen", tierErr.Captured)
+	}
+	for _, want := range []string{served.ServiceTier, "flex"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("reason %q does not mention %q", err.Error(), want)
+		}
+	}
+
+	// The returned quote is zero, so a caller that ignored the error still cannot
+	// produce a known cost: misuse understates completeness rather than inventing a
+	// figure.
+	if applicable.Valid() {
+		t.Fatal("the refused lookup returned a usable quote")
+	}
+	ignored, err := applicable.Price(u)
+	if err == nil {
+		t.Error("pricing the refused quote succeeded")
+	}
+	if ignored.Cost.Known() {
+		t.Errorf("ignoring the error produced a known cost of %s", ignored.Cost.Amount)
+	}
+	if ignored.Cost.Amount == admitted.Cost.Amount {
+		t.Errorf("ignoring the error produced the admitted amount %s", ignored.Cost.Amount)
+	}
+}
+
+// A quote whose rates were never qualified by tier covers whatever tier serves the
+// request, because there is nothing about this model's price that a tier selects
+// between.
+//
+// This is what keeps #30 a correctness fix rather than a strictness change. Every
+// Bedrock fixture is priced without reference to tier, so a response reporting
+// "default" or "priority" on such a model still settles as a known cost. The rule is
+// about knowledge: a catalog that priced no tier separately has asserted that tier
+// does not affect the price, and a catalog that priced some tiers has not.
+func TestTierAgnosticRatesCoverAnyServedTier(t *testing.T) {
+	cat, err := pricing.NewStatic(pricing.Price{
+		AccessProvider:  "aws-bedrock",
+		ProviderModelID: sonnetIdentity().ProviderModelID,
+		Rates: map[usage.Dimension]pricing.Rate{
+			usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "3.00")),
+		},
+		Provenance: pricing.Provenance{Source: "test"},
+	})
+	if err != nil {
+		t.Fatalf("NewStatic: %v", err)
+	}
+	quote, err := cat.Capture(sonnetIdentity(), at)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if quote.ServiceTier != "" {
+		t.Errorf("ServiceTier = %q, want empty: the row that priced this names no tier", quote.ServiceTier)
+	}
+
+	u := usage.New(map[usage.Dimension]int64{usage.InputTokens: 1_000_000})
+	for _, tier := range []string{"", "default", "priority", "a-tier-from-2030"} {
+		served := sonnetIdentity()
+		served.ServiceTier = tier
+
+		applicable, err := quote.For(served)
+		if err != nil {
+			t.Fatalf("For(%q) = %v, want the tier-agnostic rates to apply", tier, err)
+		}
+		priced, err := applicable.Price(u)
+		if err != nil {
+			t.Fatalf("Price(%q): %v", tier, err)
+		}
+		if want := dollars(t, "3.00"); !priced.Cost.Known() || priced.Cost.Amount != want {
+			t.Errorf("tier %q priced %s (%s), want a known %s", tier, priced.Cost.Amount, priced.Cost.State(), want)
+		}
+	}
+}
+
+// A captured quote records the tier its rates were *priced for*, not the tier the
+// request asked for.
+//
+// The second half of #30. A tier-less catalog row matches a request naming any tier,
+// so labelling the capture with the requested tier made it claim rates it was never
+// priced for -- and that claim is indistinguishable at settlement from a real
+// tier-specific capture, which is worse than the fallback it hid.
+func TestCaptureRecordsTheTierItsRatesWerePricedFor(t *testing.T) {
+	cat, err := pricing.NewStatic(
+		pricing.Price{
+			AccessProvider:  "openai",
+			ProviderModelID: "gpt-tier-test",
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "1.00")),
+			},
+			Provenance: pricing.Provenance{Source: "test"},
+		},
+		pricing.Price{
+			AccessProvider:  "openai",
+			ProviderModelID: "gpt-tier-test",
+			ServiceTier:     "priority",
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "2.00")),
+			},
+			Provenance: pricing.Provenance{Source: "test-priority"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewStatic: %v", err)
+	}
+
+	// Admitted asking for a tier this model has no row for. The tier-less row matches,
+	// which is intended -- but the quote must say so rather than calling itself a
+	// "flex" quote.
+	asked := usage.ModelIdentity{AccessProvider: "openai", ProviderModelID: "gpt-tier-test", ServiceTier: "flex"}
+	quote, err := cat.Capture(asked, at)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if quote.ServiceTier != "" {
+		t.Errorf("ServiceTier = %q, want empty: the matched row prices no tier in particular", quote.ServiceTier)
+	}
+
+	// And because this model *is* priced by tier elsewhere, being served on the flex
+	// tier it asked for is still not something the frozen rates cover.
+	if _, err := quote.For(asked); !errors.Is(err, pricing.ErrTierNotCaptured) {
+		t.Errorf("For(flex) = %v, want ErrTierNotCaptured: no flex rate was ever frozen", err)
+	}
+
+	// The tier that was priced is reachable, at its own rates.
+	served := asked
+	served.ServiceTier = "priority"
+	applicable, err := quote.For(served)
+	if err != nil {
+		t.Fatalf("For(priority): %v", err)
+	}
+	u := usage.New(map[usage.Dimension]int64{usage.InputTokens: 1_000_000})
+	priced, err := applicable.Price(u)
+	if err != nil {
+		t.Fatalf("Price: %v", err)
+	}
+	if want := dollars(t, "2.00"); priced.Cost.Amount != want {
+		t.Errorf("priority cost = %s, want %s", priced.Cost.Amount, want)
+	}
+}
+
+// A price refresh after admission cannot make a stranded request priceable.
+//
+// The immutable-quote invariant and #30 together: the captured quote is the whole
+// basis, so adding the missing tier to the live catalog -- a hundred times, with
+// different rates each time -- changes nothing about a request already admitted.
+// Anything else would let a catalog edit rewrite the cost of history.
+func TestCatalogChangesAfterAdmissionCannotPriceAnUncapturedTier(t *testing.T) {
+	cat, err := pricing.NewStatic(
+		pricing.Price{
+			AccessProvider:  "openai",
+			ProviderModelID: "gpt-mutate",
+			ServiceTier:     "default",
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "1.00")),
+			},
+			Provenance: pricing.Provenance{Source: "test"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewStatic: %v", err)
+	}
+	admitted := usage.ModelIdentity{AccessProvider: "openai", ProviderModelID: "gpt-mutate", ServiceTier: "default"}
+	quote, err := cat.Capture(admitted, at)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	served := admitted
+	served.ServiceTier = "turbo"
+	u := usage.New(map[usage.Dimension]int64{usage.InputTokens: 1_000_000})
+
+	for i := 0; i < 100; i++ {
+		// The catalog learns the tier, repeatedly, at rates that keep changing.
+		if err := cat.Add(pricing.Price{
+			AccessProvider:  "openai",
+			ProviderModelID: "gpt-mutate",
+			ServiceTier:     "turbo",
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, money.Money(1_000_000+i)),
+			},
+			Provenance: pricing.Provenance{Source: "test-later"},
+		}); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+
+		applicable, err := quote.For(served)
+		if !errors.Is(err, pricing.ErrTierNotCaptured) {
+			t.Fatalf("round %d: For(turbo) = %v, want ErrTierNotCaptured however much the catalog has learned", i, err)
+		}
+		if priced, _ := applicable.Price(u); priced.Cost.Known() {
+			t.Fatalf("round %d: the request became priceable at %s because the catalog changed", i, priced.Cost.Amount)
+		}
+	}
+
+	// A request admitted *now* does see the new rates, which is the difference between
+	// a live catalog and a frozen quote.
+	fresh, err := cat.Capture(served, at)
+	if err != nil {
+		t.Fatalf("Capture after the catalog learned the tier: %v", err)
+	}
+	if _, err := fresh.For(served); err != nil {
+		t.Errorf("For(turbo) on a freshly captured quote = %v, want the new rates to apply", err)
 	}
 }
 

@@ -614,9 +614,9 @@ func TestQuoteSetRoundTripsThroughJSON(t *testing.T) {
 	}
 	// Provenance survives, so a reader can tell which price sheet the charge came
 	// from.
-	q, ok := restored.For(agentIdentity(sonnetID))
-	if !ok {
-		t.Fatal("the restored set must still price the model it retained")
+	q, err := restored.For(agentIdentity(sonnetID))
+	if err != nil {
+		t.Fatalf("the restored set must still price the model it retained: %v", err)
 	}
 	if q.Provenance.Version != "v1" || q.Provenance.Source != "test" {
 		t.Errorf("provenance = %+v, want it preserved", q.Provenance)
@@ -687,6 +687,85 @@ func TestQuoteSetHonoursServiceTier(t *testing.T) {
 	}
 }
 
+// A compound step served on a tier no rate was frozen for is unpriceable, and the
+// charge as a whole is incomplete -- not silently priced at the rates that were
+// captured for some other tier.
+//
+// Same rule as a single charge, reached through the set. A managed agent turn made of
+// several internal invocations must not go quietly known because one step's tier was
+// substituted for one nobody priced.
+func TestQuoteSetRefusesAnUncapturedServiceTier(t *testing.T) {
+	cat, err := pricing.NewStatic(
+		pricing.Price{
+			AccessProvider:  "aws-bedrock",
+			ProviderModelID: sonnetID,
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "3.00")),
+			},
+			Provenance: pricing.Provenance{Source: "test", Version: "standard"},
+		},
+		pricing.Price{
+			AccessProvider:  "aws-bedrock",
+			ProviderModelID: sonnetID,
+			ServiceTier:     "batch",
+			Rates: map[usage.Dimension]pricing.Rate{
+				usage.InputTokens: pricing.PerMillion(usage.InputTokens, dollars(t, "1.50")),
+			},
+			Provenance: pricing.Provenance{Source: "test", Version: "batch"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewStatic: %v", err)
+	}
+	set := captureSet(t, cat)
+
+	served := agentIdentity(sonnetID)
+	served.ServiceTier = "turbo-invented-later"
+	steps := []pricing.Component{{
+		Identity: served,
+		Usage:    usage.New(map[usage.Dimension]int64{usage.InputTokens: 1_000_000}),
+	}}
+
+	// Anti-vacuous: the captured tiers do price this usage, to two different confident
+	// figures. Neither may be reported for a tier that was not captured.
+	for tier, want := range map[string]string{"": "3.00", "batch": "1.50"} {
+		known := agentIdentity(sonnetID)
+		known.ServiceTier = tier
+		cost, _, err := set.PriceComponents([]pricing.Component{{Identity: known, Usage: steps[0].Usage}})
+		if err != nil {
+			t.Fatalf("PriceComponents(%q): %v", tier, err)
+		}
+		if !cost.Known() || cost.Amount != dollars(t, want) {
+			t.Fatalf("tier %q priced %s (%s); this test needs a known %s", tier, cost.Amount, cost.State(), want)
+		}
+	}
+
+	if _, err := set.For(served); !errors.Is(err, pricing.ErrTierNotCaptured) {
+		t.Errorf("For = %v, want ErrTierNotCaptured", err)
+	}
+
+	cost, priced, err := set.PriceComponents(steps)
+	if !errors.Is(err, pricing.ErrTierNotCaptured) {
+		t.Fatalf("err = %v, want ErrTierNotCaptured", err)
+	}
+	if cost.Known() {
+		t.Errorf("cost = %s, want an incomplete cost", cost)
+	}
+	if cost.Amount != 0 {
+		t.Errorf("cost amount = %s, want zero: the captured tiers bound this one in neither direction, "+
+			"so there is no floor to report", cost.Amount)
+	}
+	if priced[0].Priced {
+		t.Error("the step reported itself as priced")
+	}
+	if !strings.Contains(priced[0].Reason, served.ServiceTier) {
+		t.Errorf("step reason = %q, want it to name the tier that served the call", priced[0].Reason)
+	}
+	if !strings.Contains(cost.Reason, served.ServiceTier) {
+		t.Errorf("cost reason = %q, want it to name the tier that served the call", cost.Reason)
+	}
+}
+
 // PriceComponents must not mutate the caller's slice. The adapter holds those
 // components as its own observation record, and pricing is a read of them.
 func TestPriceComponentsDoesNotMutateTheCallersSteps(t *testing.T) {
@@ -713,8 +792,8 @@ func TestZeroQuoteSetPricesNothing(t *testing.T) {
 	if len(set.Models()) != 0 {
 		t.Errorf("Models = %v, want none", set.Models())
 	}
-	if _, ok := set.For(agentIdentity(sonnetID)); ok {
-		t.Error("a zero set must have no quote for anything")
+	if _, err := set.For(agentIdentity(sonnetID)); !errors.Is(err, pricing.ErrNoPrice) {
+		t.Errorf("For on a zero set = %v, want ErrNoPrice: it has no quote for anything", err)
 	}
 	cost, _, err := set.PriceComponents([]pricing.Component{step(sonnetID, 1000, 100)})
 	if !errors.Is(err, pricing.ErrNoPrice) {

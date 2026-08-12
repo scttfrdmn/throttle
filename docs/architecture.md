@@ -449,13 +449,30 @@ OpenAI reports `service_tier` on the response and may serve a flex request on th
 standard tier under load. In both, settlement prices the *observed* dimensions against
 the *frozen* basis.
 
-A tier with no captured alternate currently falls back to the primary quote — the
-rates the request was admitted under — on the grounds that pricing by the admitted
-rates is closer to the truth than pricing by nothing. That is defensible when the
-unrecognized tier is a *cheaper* one and an overstatement is the safe direction, and
-it is wrong when a provider introduces a new premium tier: the request would settle at
-the standard rate and read as fully priced. The gap is provider-neutral and predates
-any one adapter.
+**Quote lookup has no implicit fallback across price-relevant selectors.** If the tier
+that served a request has no rates frozen at admission, the lookup fails rather than
+substituting a different tier's rates, and the cost becomes unresolved. A tier
+re-prices every dimension of the request, so the rates that *were* captured bound the
+real cost in neither direction — there is no arithmetic that makes them a floor, and
+deciding by direction would make correctness depend on which way a provider's next
+tier moves prices. Pricing completeness depends on knowledge, not on a favorable guess.
+
+The lookup is therefore total in its own terms rather than permissive. A captured
+quote's own tier is the tier its rates were *priced for*, and it covers a served tier
+in exactly three cases: the tier is that same one, the tier is a frozen alternate, or
+the rates were priced without reference to tier at all and no tier was priced
+separately — meaning there is nothing about this model's price that a tier selects
+between. The third case is why this is a completeness rule and not a strictness one:
+a model priced identically on every tier keeps settling normally whatever tier the
+provider reports.
+
+An uncaptured tier is not an error to be repaired by looking harder. The call
+happened, so its usage and the tier it ran on are recorded as observed, the hold stays
+encumbered rather than being released as though the call were free, and the reason
+persisted names the tier and the tiers that were priced. Reconciliation replays the
+same frozen basis and holds no catalog, so a request stranded this way does not become
+priceable merely because the live catalog has since learned the tier — repairing it
+that way would price history at rates the request never ran under.
 
 ### When the model is not knowable at admission: a captured quote set
 

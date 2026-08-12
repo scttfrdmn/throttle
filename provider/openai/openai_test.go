@@ -701,6 +701,211 @@ func TestActualServiceTierUsesFrozenRates(t *testing.T) {
 	}
 }
 
+// An "auto" request served on a concrete tier settles from the rates frozen for that
+// tier at admission.
+//
+// This is the ordinary OpenAI case and it must keep working: "auto" is not a tier, so
+// admission has no tier to key on and captures the tier-less row plus every priced
+// tier as alternates. The response names what actually served the call, and that
+// alternate is what prices it. An actual tier legitimately covered by a captured
+// alternate is not an error -- #30 is about the tiers that were never captured.
+func TestAutoTierSettlesFromTheFrozenConcreteTier(t *testing.T) {
+	h := newHarness(t, "1000")
+
+	in := request(mini, maxOut(2000))
+	in.ServiceTier = responses.ResponseNewParamsServiceTierAuto
+	h.api.out = respond(t, fmt.Sprintf(`{
+		"id": "resp_auto", "object": "response", "status": "completed", "model": %q,
+		"service_tier": "flex",
+		"usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
+	}`, mini))
+
+	res, err := h.client.Respond(context.Background(), openai.Request{
+		BudgetID: "team", RequestID: "req-auto-tier", Params: in,
+	})
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if res.Identity.ServiceTier != "flex" {
+		t.Errorf("ServiceTier = %q, want flex: auto resolved server-side and the response says so",
+			res.Identity.ServiceTier)
+	}
+	if !res.Cost.Known() {
+		t.Fatalf("a tier with frozen rates must settle as a known cost: %s", res.Cost.Reason)
+	}
+	// gpt-5-mini flex: $0.125/M input, $1.00/M output.
+	if want := dollars(t, "0.000625"); res.Charge.ActualCost != want {
+		t.Errorf("ActualCost = %s, want %s (flex rates)", res.Charge.ActualCost, want)
+	}
+	if std := dollars(t, "0.00125"); res.Charge.ActualCost == std {
+		t.Errorf("ActualCost = %s: the request was served on flex but priced at the standard rate", std)
+	}
+}
+
+// A response reporting a service tier that was never priced settles as unresolved: the
+// call happened, the usage is kept, and the cost is not claimed to be known.
+//
+// This is issue #30 at the adapter. The tier string is one this build has never heard
+// of, on purpose -- the fix must work for whatever OpenAI names next, not for a list
+// of tiers hard-coded today.
+func TestUnknownActualServiceTierIsUnresolvedNotStandardRate(t *testing.T) {
+	h := newHarness(t, "1000")
+
+	// Anti-vacuous: the identical request, served on a tier that *is* priced, settles
+	// at a confident figure. That figure is what the unknown tier must not report.
+	h.api.out = completedResponse(t, mini, 1000, 500)
+	baseline, err := h.client.Respond(context.Background(), openai.Request{
+		BudgetID: "team", RequestID: "req-baseline", Params: request(mini, maxOut(2000)),
+	})
+	if err != nil {
+		t.Fatalf("baseline Respond: %v", err)
+	}
+	standard := dollars(t, "0.00125") // gpt-5-mini standard: $0.25/M in, $2.00/M out
+	if !baseline.Cost.Known() || baseline.Charge.ActualCost != standard {
+		t.Fatalf("the baseline settled %s (%s); this test needs a known %s to prove the "+
+			"refusal is not vacuous", baseline.Charge.ActualCost, baseline.Cost.State(), standard)
+	}
+
+	h.api.out = respond(t, fmt.Sprintf(`{
+		"id": "resp_new_tier", "object": "response", "status": "completed", "model": %q,
+		"service_tier": "turbo-2027",
+		"usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
+	}`, mini))
+
+	res, err := h.client.Respond(context.Background(), openai.Request{
+		BudgetID: "team", RequestID: "req-new-tier", Params: request(mini, maxOut(2000)),
+	})
+	if !errors.Is(err, openai.ErrCostUnresolved) {
+		t.Fatalf("Respond error = %v, want ErrCostUnresolved", err)
+	}
+
+	// The call happened: usage is normalized and kept in full.
+	if got, _ := res.Usage.Get(usage.InputTokens); got != 1000 {
+		t.Errorf("InputTokens = %d, want 1000: the request ran and its usage is a fact", got)
+	}
+	if got, _ := res.Usage.Get(usage.OutputTokens); got != 500 {
+		t.Errorf("OutputTokens = %d, want 500", got)
+	}
+	// The observed tier is preserved, not overwritten with the requested one.
+	if res.Identity.ServiceTier != "turbo-2027" {
+		t.Errorf("ServiceTier = %q, want the tier the provider reported serving", res.Identity.ServiceTier)
+	}
+
+	// The cost is not known, and specifically is not the standard-rate figure.
+	if res.Cost.Known() {
+		t.Error("a tier with no captured rates must not settle as a known cost")
+	}
+	if res.Cost.Amount == standard {
+		t.Errorf("cost = %s: the admitted rates were substituted for a tier they do not price", standard)
+	}
+	if res.Cost.Amount != 0 {
+		t.Errorf("cost = %s, want no amount at all: a tier re-rates the whole request, so the "+
+			"captured tiers are not a floor", res.Cost.Amount)
+	}
+	if !strings.Contains(res.Cost.Reason, "turbo-2027") {
+		t.Errorf("reason %q must name the tier that served the call", res.Cost.Reason)
+	}
+	if !strings.Contains(res.Cost.Reason, mini) {
+		t.Errorf("reason %q must name the model whose rates were frozen", res.Cost.Reason)
+	}
+
+	// The hold stays encumbered rather than released: money moved.
+	if !res.Unresolved {
+		t.Error("the result should be marked unresolved")
+	}
+	if got := h.totals(t).Reserved; got == 0 {
+		t.Error("Reserved = 0: an unresolved cost must keep its hold encumbered")
+	}
+
+	rec := h.record(t, "req-new-tier")
+	if rec.Status != activity.StatusUnresolved {
+		t.Errorf("status = %q, want %q", rec.Status, activity.StatusUnresolved)
+	}
+	if rec.Outcome != activity.OutcomeUnpriced {
+		t.Errorf("outcome = %q, want %q", rec.Outcome, activity.OutcomeUnpriced)
+	}
+	if rec.ActualCost.Known() {
+		t.Error("the durable record must not claim a known cost either")
+	}
+	if rec.Identity.ServiceTier != "turbo-2027" {
+		t.Errorf("recorded tier = %q, want the observed one: the record has to say what happened",
+			rec.Identity.ServiceTier)
+	}
+	if got, _ := rec.ActualUsage.Get(usage.OutputTokens); got != 500 {
+		t.Errorf("recorded OutputTokens = %d, want 500: the usage is durable even though the cost is not", got)
+	}
+	if !strings.Contains(rec.ActualCost.Reason, "turbo-2027") {
+		t.Errorf("recorded reason %q must name the tier, so an operator knows what to add to the catalog",
+			rec.ActualCost.Reason)
+	}
+}
+
+// Learning the tier afterwards does not make an already-settled request priceable.
+//
+// The catalog is mutated repeatedly after admission, including adding the very tier the
+// response reported. The record stays unresolved: a request is priced by the knowledge
+// frozen when it was admitted, so a catalog edit cannot rewrite what history cost.
+func TestCatalogLearningATierCannotPriceAnAlreadyStrandedRequest(t *testing.T) {
+	store, err := sqlite.Open(context.Background(), t.TempDir()+"/throttle.db")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	clock := func() time.Time { return now }
+	eng, err := engine.New(engine.Config{Ledger: store, Clock: clock})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	if err := eng.Register(context.Background(), budget.Definition{
+		ID: "team", Allocation: dollars(t, "1000"), Recurrence: budget.RecurMonthly,
+		AnchorAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}, engine.ModeEnforce); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	cat := &mutableCatalog{}
+	cat.set(t, "1.25", "10.00")
+	h := buildHarness(t, eng, store, clock, func(cfg *openai.Config) { cfg.Catalog = cat })
+
+	h.api.block = make(chan struct{})
+	h.api.out = respond(t, fmt.Sprintf(`{
+		"id": "resp_learn", "object": "response", "status": "completed", "model": %q,
+		"service_tier": "turbo-2027",
+		"usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
+	}`, gpt51))
+
+	done := make(chan *openai.Result, 1)
+	errs := make(chan error, 1)
+	go func() {
+		res, err := h.client.Respond(context.Background(), openai.Request{
+			BudgetID: "team", RequestID: "req-learn", Params: request(gpt51, maxOut(2000)),
+		})
+		done <- res
+		errs <- err
+	}()
+
+	waitFor(t, func() bool { return h.api.callCount() == 1 })
+	// The catalog learns the tier while the call is in flight, a hundred times over, at
+	// rates that keep changing. None of it is part of this request's basis.
+	for i := 0; i < 100; i++ {
+		cat.addTier(t, "turbo-2027", money.Money(1_000_000+int64(i)))
+	}
+	close(h.api.block)
+
+	res, err := <-done, <-errs
+	if !errors.Is(err, openai.ErrCostUnresolved) {
+		t.Fatalf("Respond error = %v, want ErrCostUnresolved despite the catalog now knowing the tier", err)
+	}
+	if res.Cost.Known() {
+		t.Errorf("cost = %s: the live catalog was consulted to price a request it was not admitted under",
+			res.Cost.Amount)
+	}
+	if got := h.record(t, "req-learn").Status; got != activity.StatusUnresolved {
+		t.Errorf("status = %q, want %q", got, activity.StatusUnresolved)
+	}
+}
+
 // The quote captured at admission carries the alternate tiers, so a response that
 // reports a tier the request did not name still prices from frozen knowledge.
 func TestAlternateTierIsFrozenAtAdmission(t *testing.T) {
@@ -807,6 +1012,27 @@ func (m *mutableCatalog) set(t *testing.T, input, output string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.static = s
+}
+
+// addTier teaches the catalog a service tier it did not have, standing in for
+// somebody adding the row after a response reported a tier nobody had priced.
+func (m *mutableCatalog) addTier(t *testing.T, tier string, perMillion money.Money) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.static.Add(pricing.Price{
+		AccessProvider:  "openai",
+		ProviderModelID: gpt51,
+		ServiceTier:     tier,
+		Rates: map[usage.Dimension]pricing.Rate{
+			usage.InputTokens:     pricing.PerMillion(usage.InputTokens, perMillion),
+			usage.OutputTokens:    pricing.PerMillion(usage.OutputTokens, perMillion),
+			usage.ReasoningTokens: pricing.PerMillion(usage.ReasoningTokens, perMillion),
+		},
+		Provenance: pricing.Provenance{Source: "test-later", Version: "test-2", Currency: "USD"},
+	}); err != nil {
+		t.Fatalf("Add(%q): %v", tier, err)
+	}
 }
 
 func (m *mutableCatalog) current() *pricing.Static {

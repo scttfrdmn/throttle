@@ -1001,6 +1001,103 @@ func TestParentIsNotOversubscribedUnderConcurrency(t *testing.T) {
 	}
 }
 
+// Concurrent requests that all come back on an unpriced tier keep the ancestor chain
+// safe: nothing is charged, every hold stays encumbered, and the parent's encumbrance
+// is the sum of its children's.
+//
+// The concurrency case for #30. An unresolved settlement is the path that keeps money
+// tied up rather than moving it, so a race here would show as headroom being handed out
+// twice for spend that has already happened -- the same failure the atomic-reservation
+// invariant exists to prevent, reached through the pricing refusal instead of a charge.
+func TestConcurrentUnpricedTierRequestsKeepTheChainSafe(t *testing.T) {
+	store, err := sqlite.Open(context.Background(), t.TempDir()+"/throttle.db")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	clock := func() time.Time { return now }
+	eng, err := engine.New(engine.Config{Ledger: store, Clock: clock})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	anchor := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	if err := eng.Register(context.Background(), budget.Definition{
+		ID: "org", Allocation: dollars(t, "1000"), Recurrence: budget.RecurMonthly, AnchorAt: anchor,
+	}, engine.ModeEnforce); err != nil {
+		t.Fatalf("Register org: %v", err)
+	}
+	for _, child := range []string{"team-a", "team-b"} {
+		if err := eng.Register(context.Background(), budget.Definition{
+			ID: child, ParentID: "org", Allocation: dollars(t, "500"),
+			Recurrence: budget.RecurMonthly, AnchorAt: anchor,
+		}, engine.ModeEnforce); err != nil {
+			t.Fatalf("Register %s: %v", child, err)
+		}
+	}
+	h := buildHarness(t, eng, store, clock)
+	h.api.out = respond(t, fmt.Sprintf(`{
+		"id": "resp_conc_tier", "object": "response", "status": "completed", "model": %q,
+		"service_tier": "turbo-2027",
+		"usage": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
+	}`, gpt51))
+
+	const attempts = 24
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var unresolved, other int
+
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			child := "team-a"
+			if i%2 == 1 {
+				child = "team-b"
+			}
+			res, err := h.client.Respond(context.Background(), openai.Request{
+				BudgetID:  child,
+				RequestID: fmt.Sprintf("req-conc-tier-%d", i),
+				Params:    request(gpt51, maxOut(2000)),
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case errors.Is(err, openai.ErrCostUnresolved) && res != nil && !res.Cost.Known():
+				unresolved++
+			default:
+				other++
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if unresolved != attempts {
+		t.Fatalf("%d of %d requests settled as unresolved (%d otherwise), want all of them: "+
+			"an unpriced tier is not a race-dependent outcome", unresolved, attempts, other)
+	}
+
+	// Nothing charged anywhere, at any depth.
+	for _, id := range []string{"org", "team-a", "team-b"} {
+		if got := h.totalsFor(t, id).Spent; got != 0 {
+			t.Errorf("%s Spent = %s, want 0: no cost was ever known", id, got)
+		}
+	}
+	// Every hold stays encumbered, and the parent carries every child's.
+	parent := h.totalsFor(t, "org").Reserved
+	if parent == 0 {
+		t.Fatal("org Reserved = 0: unresolved costs must keep their holds encumbered at every depth")
+	}
+	if sum := h.totalsFor(t, "team-a").Reserved + h.totalsFor(t, "team-b").Reserved; sum != parent {
+		t.Errorf("children hold %s but the parent holds %s: an encumbrance was lost or double-counted "+
+			"across the chain", sum, parent)
+	}
+	if parent > dollars(t, "1000") {
+		t.Errorf("org Reserved = %s, above its allocation: concurrent unresolved requests "+
+			"oversubscribed the parent", parent)
+	}
+}
+
 // apiError builds a real SDK API error, so the error-classification path under test is
 // the production one rather than a stand-in.
 //

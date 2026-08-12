@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/scttfrdmn/throttle/money"
@@ -34,7 +35,57 @@ var (
 	// dimensions we happen to know would understate the bill, so this is an
 	// error rather than a partial total.
 	ErrNoRate = errors.New("pricing: no rate for billable dimension")
+
+	// ErrTierNotCaptured reports that the provider served a request on a service
+	// tier no rate was frozen for at admission.
+	//
+	// Distinct from ErrNoPrice: the model is priced, and priced by tier, but not for
+	// the tier that actually ran. There is nothing to fall back to -- a tier re-rates
+	// the whole request, so the tiers that were captured bound this one's cost in
+	// neither direction -- so the request is unpriceable on its own frozen basis and
+	// settles as unresolved.
+	ErrTierNotCaptured = errors.New("pricing: no captured rates for the service tier that served the request")
 )
+
+// tierUnqualified is how a quote whose rates are not tier-specific names itself in a
+// reason. Not a tier value and never compared against one: it exists so an operator
+// reading "captured: ..." is not shown an empty string.
+const tierUnqualified = "(not tier-specific)"
+
+// TierNotCapturedError says which tier served a request and which ones had rates.
+//
+// A typed error rather than a formatted string because the tier is the actionable
+// fact: an operator needs to know what to add to the catalog, and a later
+// reconciliation needs to recognize the condition structurally rather than by parsing
+// prose. No provider response body is carried here -- only normalized identity.
+type TierNotCapturedError struct {
+	// ProviderModelID is the model whose rates were frozen.
+	ProviderModelID string
+
+	// ServiceTier is the tier the provider reported actually serving the request.
+	ServiceTier string
+
+	// Captured names the tiers the admission-time quote can price, in a stable
+	// order, so the reason says what was known and not merely what was missing.
+	Captured []string
+}
+
+func (e *TierNotCapturedError) Error() string {
+	model := e.ProviderModelID
+	if model == "" {
+		model = "the model"
+	}
+	if len(e.Captured) == 0 {
+		return fmt.Sprintf("%s was served on service tier %q, which no rate was captured for when this request was admitted",
+			model, e.ServiceTier)
+	}
+	return fmt.Sprintf("%s was served on service tier %q, which was not among the tiers priced when this request was admitted (captured: %s)",
+		model, e.ServiceTier, strings.Join(e.Captured, ", "))
+}
+
+// Unwrap ties the typed error to the sentinel, so a caller can test for the
+// condition without knowing the type.
+func (e *TierNotCapturedError) Unwrap() error { return ErrTierNotCaptured }
 
 // Rate is the price of one billable dimension: PerUnit microdollars for every
 // Unit units consumed.

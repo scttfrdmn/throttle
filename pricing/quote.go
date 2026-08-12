@@ -35,9 +35,22 @@ type CapturedQuote struct {
 	AccessProvider  string `json:"access_provider"`
 	ProviderModelID string `json:"provider_model_id"`
 
-	// Region and ServiceTier are the access dimensions that selected this price,
-	// recorded so it is clear why these rates and not others.
-	Region      string `json:"region,omitempty"`
+	// Region is the access dimension that selected this price, recorded so it is
+	// clear why these rates and not others.
+	Region string `json:"region,omitempty"`
+
+	// ServiceTier is the tier these rates are *qualified for*, not the tier the
+	// request asked for.
+	//
+	// The distinction is the whole of issue #30. A catalog row written without a tier
+	// prices a model whose price does not vary by tier, and it matches a request
+	// naming any tier -- so labelling the captured quote with the requested tier would
+	// make it claim rates it was never priced for. Empty therefore means "these rates
+	// are not qualified by tier", which is a claim the catalog actually made, and a
+	// non-empty value means the catalog priced this tier specifically.
+	//
+	// Coverage of the tier that eventually serves the request is decided from this
+	// field and Alternates alone. See For.
 	ServiceTier string `json:"service_tier,omitempty"`
 
 	// Rates are the captured per-dimension prices. A dimension absent here cannot
@@ -78,17 +91,62 @@ func (q CapturedQuote) Valid() bool {
 // For selects the captured quote applicable to the identity the provider actually
 // served, which may name a different service tier than the request asked for.
 //
-// It never consults a catalog: an unrecognized tier falls back to the primary
-// quote, because pricing a request by the rates it was admitted under is closer to
-// the truth than pricing it by nothing.
-func (q CapturedQuote) For(id usage.ModelIdentity) CapturedQuote {
+// It never consults a catalog, and it never substitutes a rate it does not have. A
+// quote covers a served tier in exactly three cases:
+//
+//   - the served tier is the tier these rates are qualified for;
+//   - an alternate frozen at admission is keyed by it;
+//   - these rates are not qualified by tier and no alternates were captured, which is
+//     the catalog asserting that tier does not affect this model's price.
+//
+// Anything else returns a zero quote and a *TierNotCapturedError. That is the fix for
+// issue #30. Falling back to the admitted rates produced a cost that reported itself
+// as known while being computed from a price sheet the request did not run under, and
+// no direction of that error is safe: a tier re-rates every dimension of the request,
+// so the admitted rates bound the real cost neither above nor below. Whether a cost is
+// complete has to depend on what throttle knows, not on which way the provider's next
+// tier happens to move its prices.
+//
+// The returned quote is zero rather than the primary deliberately: a caller that
+// ignores the error prices with an invalid quote and gets an unknown cost out of
+// Price, so misuse understates completeness instead of overstating it.
+func (q CapturedQuote) For(id usage.ModelIdentity) (CapturedQuote, error) {
 	if id.ServiceTier == "" || id.ServiceTier == q.ServiceTier {
-		return q
+		return q, nil
 	}
 	if alt, ok := q.Alternates[id.ServiceTier]; ok && alt.Valid() {
-		return alt
+		return alt, nil
 	}
-	return q
+	// Rates the catalog priced without reference to tier, and no tier was priced
+	// separately: there is nothing about this model's price that a tier selects
+	// between, so the frozen rates do cover whatever tier served the call.
+	if q.ServiceTier == "" && len(q.Alternates) == 0 {
+		return q, nil
+	}
+	return CapturedQuote{}, &TierNotCapturedError{
+		ProviderModelID: q.ProviderModelID,
+		ServiceTier:     id.ServiceTier,
+		Captured:        q.capturedTiers(),
+	}
+}
+
+// capturedTiers names the tiers this quote can price, for the reason an operator
+// reads. The qualified tier is included, and an empty one is named as such rather
+// than omitted: "the rates were not tier-specific" is the useful fact there.
+func (q CapturedQuote) capturedTiers() []string {
+	out := make([]string, 0, len(q.Alternates)+1)
+	if q.ServiceTier != "" {
+		out = append(out, q.ServiceTier)
+	} else if len(q.Alternates) > 0 {
+		out = append(out, tierUnqualified)
+	}
+	for tier, alt := range q.Alternates {
+		if alt.Valid() {
+			out = append(out, tier)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Rate returns the captured rate for a dimension.

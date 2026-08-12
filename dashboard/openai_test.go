@@ -286,6 +286,83 @@ func TestUnpricedOpenAIModelNeverRendersAsFree(t *testing.T) {
 		"the detail page must say why the cost is unknown")
 }
 
+// A request served on a service tier that was never priced renders as unresolved -- not
+// as free, and not as the figure the rates that *were* priced would have produced.
+//
+// The rendering half of #30, and a harder case than an unpriced model: here the captured
+// quote is valid and carries rates, so there is a concrete number within reach. The
+// display must not reach for it. A tier re-prices every dimension of the request, so the
+// frozen rates are not a bound in either direction and any figure derived from them would
+// be a guess wearing the typography of a measurement.
+func TestUncapturedServiceTierNeverRendersAsThePricedRate(t *testing.T) {
+	w := newWorld(t)
+	p := w.define(monthly("research", "", dollars(1000)))
+	at := w.now.Add(-time.Hour)
+
+	// Anti-vacuous baseline: the same record, priced from the frozen rates as the
+	// pre-#30 fallback would have, renders as this exact cell. Every assertion below is
+	// therefore about completeness and not about a table that cannot print money.
+	const wouldHaveRendered = "$0.0600"
+	w.record(openAIRecord("priced", "research", p.ID, cents(6), at))
+	w.spend("s1", "research", cents(6), at)
+	if got := cellsUnder(t, panel(t, w.html("/?budget=research"), "activity"), "Actual"); len(got) != 1 ||
+		got[0] != wouldHaveRendered {
+		t.Fatalf("the priced baseline renders as %v, want [%s]: this test cannot prove the display "+
+			"refuses a figure it was never able to produce", got, wouldHaveRendered)
+	}
+
+	const served = "turbo-2027"
+	reason := `gpt-5.1 was served on service tier "` + served + `", which was not among the ` +
+		`tiers priced when this request was admitted (captured: priority)`
+
+	rec := openAIRecord("uncaptured-tier", "research", p.ID, cents(6), at.Add(time.Minute))
+	// The quote is untouched: valid, tier-qualified, carrying rates. Only the tier that
+	// actually served the call is different, and that alone is what makes the cost
+	// unknowable from what was frozen.
+	rec.Identity.ServiceTier = served
+	rec.ActualCost = usage.UnknownCost(reason)
+	rec.Reserved = dollars(1)
+	rec.Status = activity.StatusUnresolved
+	rec.Outcome = activity.OutcomeUnpriced
+	w.record(rec)
+
+	body := w.html("/?budget=research")
+	actuals := cellsUnder(t, panel(t, body, "activity"), "Actual")
+	if len(actuals) != 2 {
+		t.Fatalf("activity table has %d rows, want 2: %v", len(actuals), actuals)
+	}
+	// Newest first, so the unresolved row is the one on top.
+	if actuals[0] != "unresolved" {
+		t.Errorf("a request on an unpriced tier renders as %q, want %q", actuals[0], "unresolved")
+	}
+	if strings.HasPrefix(actuals[0], "$0.00") {
+		t.Errorf("rendered as %q: this request consumed tokens and was not free", actuals[0])
+	}
+	if actuals[0] == wouldHaveRendered {
+		t.Errorf("rendered as %q, which is what the *priced* tier would have charged: the rate for "+
+			"the tier that actually ran was never captured, so this figure is not throttle's to "+
+			"report as known", actuals[0])
+	}
+
+	// The hold stays visible as a hold, so a reader can see money is tied up without
+	// seeing it counted as spend.
+	if held := cellsUnder(t, panel(t, body, "activity"), "Reserved"); len(held) == 0 || held[0] != "$1.0000" {
+		t.Errorf("Reserved = %v, want $1.0000: an unresolved liability's hold is still held", held)
+	}
+	// And the page total is a floor rather than a total, because it has an unpriceable
+	// row underneath it.
+	if spend := figure(t, body, "page-spend"); !strings.HasSuffix(spend, "+") {
+		t.Errorf("page spend = %q, want a trailing + to mark a floor", spend)
+	}
+
+	// The operator gets the actionable reason, naming the tier -- not "pricing failed".
+	detail := w.html("/request/uncaptured-tier")
+	mustSay(t, detail, served,
+		"the detail page must name the service tier that had no captured rate")
+	mustSay(t, detail, "not among the tiers priced when this request was admitted",
+		"the detail page must explain that the gap is in the admission-time pricing knowledge")
+}
+
 // Two access providers in one budget group into one breakdown, with no provider-specific
 // code and no collision.
 //
