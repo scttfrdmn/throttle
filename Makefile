@@ -1,4 +1,4 @@
-.PHONY: test race fmt vet check demo demo-serve build cross
+.PHONY: test race fmt vet check demo demo-serve build cross release
 
 test:
 	go test ./...
@@ -37,6 +37,25 @@ cross:
 	done
 	@echo
 	@ls -l dist/*/throttle
+
+# Packages what "cross" built for publication: one archive per platform, each holding the
+# binary and the license, plus checksums covering every archive. Requires an explicit
+# VERSION so a release cannot be cut from a vague description of the checkout, and so the
+# archive names and the version the binary reports agree.
+release:
+	@test -n "$(VERSION)" || { echo "release requires VERSION, e.g. make release VERSION=v0.1.0"; exit 1; }
+	@$(MAKE) --no-print-directory cross VERSION=$(VERSION)
+	@v=$(patsubst v%,%,$(VERSION)); \
+	for p in $(PLATFORMS); do \
+		os=$${p%%/*}; arch=$${p##*/}; name=throttle_$${v}_$${os}_$${arch}; \
+		mkdir -p dist/$$name && \
+		cp dist/throttle_$${os}_$${arch}/throttle dist/$$name/throttle && \
+		cp LICENSE dist/$$name/LICENSE && \
+		tar -C dist -czf dist/$$name.tar.gz $$name || exit 1; \
+	done; \
+	cd dist && shasum -a 256 *.tar.gz > SHA256SUMS
+	@echo
+	@ls -l dist/*.tar.gz dist/SHA256SUMS
 
 # Walks the documented first run against a scratch HOME, so the demo never touches the
 # user's real configuration or ledger: init, edit, check, apply, status.
