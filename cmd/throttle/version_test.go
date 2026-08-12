@@ -42,6 +42,12 @@ func TestReleaseBuildReportsItsLdflagsVersion(t *testing.T) {
 // No generated file, no build step, no linker flag: "go build ./cmd/throttle" out of a checkout
 // produces a binary that can name itself, because a version that only exists in release
 // artifacts is a version nobody can quote in a bug report.
+//
+// Which useful answer depends on the checkout, so the assertion cannot name one. A tree with no
+// reachable tag reports the development version and the commit; a tree checked out *at* a
+// release tag reports that release, because it genuinely is that release -- which is what CI
+// builds on a tag push. What is asserted is that neither case yields a placeholder, and that a
+// commit suffix is attached to the development version rather than to a release.
 func TestOrdinaryBuildHasAUsefulVersion(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "throttle")
@@ -56,17 +62,24 @@ func TestOrdinaryBuildHasAUsefulVersion(t *testing.T) {
 		t.Fatalf("version: %v", err)
 	}
 	got := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(got, devVersion) {
-		t.Errorf("version = %q, want it to start with %q", got, devVersion)
+
+	// Never a placeholder dressed up as a version.
+	if got == "" || got == "(devel)" || strings.HasPrefix(got, "v0.0.0-") {
+		t.Fatalf("version = %q, which names no code", got)
 	}
-	// Not a release, and not pretending to be one.
-	if got == "(devel)" || strings.HasPrefix(got, "v0.0.0-") {
-		t.Errorf("version = %q, which reports a placeholder as a release", got)
+	if strings.HasPrefix(got, devVersion) {
+		// Volatile build metadata is fine in a version string and not in a test expectation:
+		// this checks the shape, not the commit.
+		if strings.Contains(got, "+") && !strings.HasPrefix(got, devVersion+"+") {
+			t.Errorf("version = %q has a suffix that is not attached to the development version", got)
+		}
+		return
 	}
-	// Volatile build metadata is fine in a version string and not in a test expectation:
-	// this checks the shape, not the commit.
-	if strings.Contains(got, "+") && !strings.Contains(got, devVersion+"+") {
-		t.Errorf("version = %q has a suffix that is not attached to the development version", got)
+	// Otherwise this checkout sits at a tag and reports it. The toolchain marks a modified tree
+	// as "+dirty" of its own accord, which is exactly the disclosure wanted, so a "+" suffix is
+	// permitted here -- but the version must still name a release and not a placeholder.
+	if !isRelease(got) {
+		t.Errorf("version = %q, want either %q with an optional commit suffix, or the release tag this checkout is at", got, devVersion)
 	}
 }
 
