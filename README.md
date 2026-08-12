@@ -4,86 +4,128 @@
 
 # throttle
 
-**Turn an AI spending budget into a continuously adjusting rate limit.**
+**throttle turns a spending budget into a continuously adjusting rate limit for AI usage.**
 
-`throttle` is a provider-neutral spending governor for LLM and AI API usage. Give it a budget and a time envelope; it tracks actual usage, banks underspend, permits controlled bursts, optionally borrows from future budget, and prevents spend from outrunning the envelope.
+Bank what you don't use. Burst when you need to. Borrow from future budget when policy
+allows. Stay on pace automatically.
 
-The initial proving ground is AWS Bedrock chat and agents, but the core is intentionally independent of Bedrock, OpenAI, Anthropic, Gemini, or any other provider.
+## Why
 
-## Core idea
+A monthly limit tells you nothing on the 12th. A rate limit measured in requests per second
+does not know what a request costs. Neither answers the question anyone actually has: *given
+what I have spent so far, how fast can I spend right now?*
 
-For an allocation `B` over a period `[start, end]`, the default pacing curve is linear. At time `t`:
+throttle answers it continuously. It measures actual spend from measured usage and provider
+rates, compares that against where the period's pacing curve says you should be, and turns the
+difference into an admission decision on the next request — allow, wait, or deny. A budget
+becomes a rate limit denominated in money instead of requests.
+
+> Given a budget and a time period, throttle accurately measures AI spend, shows whether usage
+> is ahead or behind pace, and governs requests against the spending envelope.
+
+## Bank, burst, and borrow
+
+For an allocation `B` over a period `[start, end]`, the default pacing curve is linear. At
+time `t`:
 
 ```text
 target spend = carry + B * elapsed / duration
 bank         = target spend - actual spend
 ```
 
-A positive bank means the workload is ahead of plan (underspent). A negative bank means it has consumed future allocation.
+**Banking** is what underspend earns you. A quiet week leaves the bank positive: you are
+behind the curve, and that headroom is yours to spend later in the period. **Bursting** is
+spending it — a positive bank is exactly how much you can spend right now above the even
+split without going over for the period. A negative bank means the opposite: you have
+consumed allocation the curve had not reached yet.
 
-Borrowing is expressed as time, not dollars. `borrow: 72h` allows the workload to pull forward up to three days of the pacing curve without changing the total period allocation.
+**Borrowing** is expressed as time, not dollars, which is the part worth reading twice.
+`borrow: 72h` lets a workload spend as though it were three days further into the period than
+it is. It does not raise the allocation, and it never invents money: the period total is
+unchanged, and everything pulled forward is unavailable later. It exists because an even
+split across a month refuses a legitimate Monday-morning batch job that the month as a whole
+affords comfortably.
 
-## v0.1 promise
+**Rollover** is the same idea across a boundary: unspent allocation carries into the next
+period, optionally capped, so a slow month funds a busy one.
 
-> Given a budget and a time period, throttle accurately measures AI spend, shows whether consumption is ahead or behind pace, and governs requests against the spending envelope.
+## What works today
 
-The first release should focus on:
+Governed AWS Bedrock calls work end to end: `Converse`, `ConverseStream`, Agents Classic
+`InvokeAgent`, and AgentCore `InvokeAgentRuntime`. Around them:
 
-- arbitrary budget envelopes; monthly is shorthand/default
-- linear pacing
-- rollover on/off with an optional cap
-- time-based borrowing
-- hierarchical sub-budgets
-- estimate → reserve → execute → reconcile accounting
-- integer microdollar money representation
-- concurrent-safe reservations
-- Bedrock `Converse`, `ConverseStream`, and `InvokeAgent`
-- model identity below the access provider (e.g. Anthropic Claude via Bedrock)
-- provider-neutral usage and pricing records
-- local SQLite ledger
-- local dashboard for burn, bank/debt, range/forecast, model/provider/workload use, and live activity
-- monitor, allow, wait/queue, and deny enforcement
+- **Budgets** with arbitrary envelopes — `monthly` is shorthand for the same period rule a
+  two-year grant uses — plus linear pacing, banking, time-based borrowing, rollover with an
+  optional cap, and hierarchical sub-budgets where a child's spend consumes its ancestors'
+  headroom.
+- **Accounting** as `estimate → reserve → execute → reconcile`, in integer microdollars, with
+  concurrency-safe reservations, leases that survive a crashed process, and a repair command
+  for bookkeeping left half-finished.
+- **Pricing** as data with provenance and effective dates, quoted once at admission and
+  replayed at settlement, so a price change mid-request cannot rewrite what a request cost.
+- **Enforcement** as monitor, enforce, or wait, chosen by the process doing the spending.
+- **A local dashboard** for burn rate, bank and debt, pacing, model and provider breakdowns,
+  and recent requests. Read-only, loopback by default, no authentication.
+- **A local SQLite ledger and activity store.** No server, no account, no network calls of
+  throttle's own.
 
-Scope for the first release is the [`v0.1.0` milestone](https://github.com/scttfrdmn/throttle/milestone/1). Deliberately deferred ideas are parked on the [future policy issue](https://github.com/scttfrdmn/throttle/issues/3).
+Not yet: any provider other than Bedrock. The engine imports no provider SDK and the usage and
+pricing records are provider-neutral by design, but OpenAI, Anthropic direct, and Gemini
+adapters do not exist — nothing here supports them today. Pricing ships as a versioned fixture
+catalog rather than a live AWS Price List sync, and the worker that ingests delayed AgentCore
+runtime-resource usage is not written, though the data model and join keys for it are.
 
-## Status
+Release scope is the [`v0.1.0` milestone](https://github.com/scttfrdmn/throttle/milestone/1).
+Deferred ideas are parked on the [future policy issue](https://github.com/scttfrdmn/throttle/issues/3).
 
-The local core is implemented and tested, and governed AWS Bedrock `Converse`,
-`ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime`
-calls work end to end.
+## What is stored, and what is not
 
-Working today:
+throttle keeps two SQLite files on your machine and nothing else. The ledger holds budget
+definitions, periods, reservations, and charges. The activity store holds one record per
+request: which budget and ancestors it consumed, the model identity, measured usage, cost and
+whether that cost is complete, the rates quoted at admission, timings, and the enforcement
+posture that governed the call.
 
-- `money` — integer microdollar arithmetic with explicit overflow reporting
-- `budget` — envelopes, linear pacing, banking, time-based borrowing, rollover, recurrence rules
-- `ledger` — the reservation contract, plus a conformance suite that is its executable specification
-- `ledger/sqlite` — durable budget definitions, materialized periods, atomic hierarchical reservations, lease renewal, crash recovery
-- `engine` — admission decisions, `estimate → reserve → execute → reconcile`, bounded waiting, period advancement
-- `usage` — dimensional usage and model identity, where an unrecognized model is a representable state rather than an error, and a cost is known, partly known, or explicitly unknown — never silently zero; every dimension has a canonical integer unit, so a provider's decimal resource quantity is converted exactly rather than stored as a float
-- `pricing` — exact integer rates with provenance, effective dates, and local overrides, quoted once at admission and replayed at settlement so a price change mid-request cannot rewrite what a request cost; for a request whose models are unknowable in advance, the whole candidate rate set is frozen in one read instead
-- `activity`, `activity/sqlite` — durable, content-free per-request records: usage, cost and its completeness, the captured quote, the compound detail of an agent turn, the reconciliation linkage of a hosted runtime invocation, and the enforcement posture that actually governed the call
-- `provider/bedrock` — governed `Converse`, `ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime`: preflight estimation, response reconciliation, durable activity, and explicit behavior for cancellation, provider errors, unpriceable costs, and ambiguous outcomes
-- `reconcile` — repairs bookkeeping a crashed process left half-finished, from durable state alone: it completes a stalled transition when the two stores already hold enough authoritative information to complete it truthfully, prices a replayed settlement with the quote captured at admission rather than any current catalog, and leaves a genuinely unknown cost explicitly unknown instead of tidying it into a zero
-- `dashboard` — a local, read-only view of burn, bank and debt, pacing, model and provider breakdowns, and live activity; loopback by default, because it has no authentication
-- `config` — one configuration model shared by every command, with a documented precedence and a `config check` that validates without touching the ledger
-- `cmd/throttle` — define and inspect budgets, run the dashboard, and repair stranded bookkeeping
+Deliberately **not** stored, anywhere, ever:
 
-Not yet: providers other than Bedrock, and the worker that ingests delayed AgentCore
-runtime-resource usage — the data model and the join keys for it exist, the ingestion
-does not. Pricing ships as a versioned fixture catalog rather than a live AWS Price
-List sync.
+- prompts, and model responses
+- reasoning or model rationale
+- agent trace payloads — throttle enables the trace because it is the only place per-invocation
+  usage is reported, passes all of it to you, and persists none of it
+- AgentCore request and response bodies, which it forwards without parsing
+- provider credentials or API keys, which stay with the AWS SDK's normal mechanisms
 
-## Getting started
+There is no telemetry. Nothing reports to us, there is no licence check or user counting, and
+the only network calls are the ones your own application makes to its provider.
+
+## When throttle cannot price something
+
+A cost is known, partly known, or explicitly unknown — never silently zero. An unrecognized
+model, a stream that ended before its usage metadata, an agent turn whose internal calls are
+not all priceable, a hosted runtime that reports resource use later and approximately: each
+produces a request whose cost throttle will not invent.
+
+What happens next depends on the posture. **Under enforcement** a request throttle cannot
+price is denied before the provider is called, because a dollar budget cannot be honestly
+enforced against exposure that cannot be determined. **Under monitoring** it runs, and its
+cost is recorded as unknown. Either way the dashboard renders it as unknown rather than
+`$0.00`, and a period total containing one is shown as a floor — `$812.41+` — because a total
+that quietly omits unpriceable spend is worse than one that admits it is a lower bound.
+
+## Install
 
 ```bash
-go build -o throttle ./cmd/throttle
+go install github.com/scttfrdmn/throttle/cmd/throttle@latest
 ```
+
+> This repository is not public yet, so that command does not work for you today. Until it is,
+> build from a checkout: `go build -o throttle ./cmd/throttle`.
 
 `throttle init` writes a starter configuration file and nothing else — no databases, no
 credentials, no cloud resources:
 
 ```bash
-./throttle init    # writes the config file, prints where, and says what to do next
+throttle init    # writes the config file, prints where, and says what to do next
 ```
 
 The default location follows the platform's own conventions:
@@ -128,12 +170,12 @@ budgets:
 Then check it, see what it would do, store it, and watch it:
 
 ```bash
-./throttle config check    # parse, validate, resolve, and compare to the ledger. Writes nothing.
-./throttle config show     # what is in effect, and where each value came from
-./throttle config diff     # what "apply" would change, in detail. Still writes nothing.
-./throttle config apply    # store the definitions from the file
-./throttle status          # uses defaults.budget when no -id is given
-./throttle serve           # the dashboard, on 127.0.0.1:7654
+throttle config check    # parse, validate, resolve, and compare to the ledger. Writes nothing.
+throttle config show     # what is in effect, and where each value came from
+throttle config diff     # what "apply" would change, in detail. Still writes nothing.
+throttle config apply    # store the definitions from the file
+throttle status          # uses defaults.budget when no -id is given
+throttle serve           # the dashboard, on 127.0.0.1:7654
 ```
 
 `config check` and `config diff` are read-only and exit nonzero on a problem, so they work
@@ -173,16 +215,16 @@ A one-off budget needs no file at all:
 
 ```bash
 # Define a budget once; it is persisted and shared by every process on the ledger.
-./throttle define -id research -budget '$400' -borrow 72h -rollover credit
+throttle define -id research -budget '$400' -borrow 72h -rollover credit
 
 # Sub-budgets are real entities, and a child's spend consumes its ancestors too.
-./throttle define -id agents -parent research -budget '$150'
+throttle define -id agents -parent research -budget '$150'
 
 # Is a $2.50 request admissible right now, and if not, which budget said no?
-./throttle status -id agents -chain -estimate 2.50
+throttle status -id agents -chain -estimate 2.50
 
 # After a crash: what bookkeeping is half-finished, and what would repairing it do?
-./throttle reconcile -dry-run
+throttle reconcile -dry-run
 ```
 
 For the test suite and the demo:
@@ -407,16 +449,14 @@ computed share would be indistinguishable from a measurement.
 8. Managed-agent accounting must not claim hard mid-run enforcement when the upstream platform does not expose such a control boundary.
 9. Hosted-runtime resource cost is never inferred from wall-clock time, allocated capacity, or payload size, and a session's bill is never apportioned across the invocations that shared it.
 
-## Product boundary
-
-The intended product model is simple:
-
-- **single user:** free/open-source and functionally complete for personal use
-- **teams:** shared budgets and collaboration, commercial but intentionally inexpensive
-- **enterprise:** institutional identity, governance, audit, deployment, support, and policy administration
-
-Do not introduce licensing gates into the core while building v0.1.
-
 ## License
 
-TBD before public release. Do not add a license without an explicit project decision.
+throttle is licensed under the [Apache License 2.0](LICENSE).
+
+Copyright 2026 Scott Friedman.
+
+That is the whole licensing story for this repository. Shared budgets across a team, and
+institutional governance on top of them, are planned as commercial editions — but that is a
+product boundary rather than a licence term. Nothing in the Apache licence restricts this core
+to one person or to non-commercial use, and there is no licence check, user counting, feature
+gate, or telemetry in it.
