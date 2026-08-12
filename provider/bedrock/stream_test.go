@@ -143,10 +143,15 @@ func TestStreamDeliversEventsIncrementally(t *testing.T) {
 // 2. A stream slower than its lease quantum: the hold is renewed, the headroom
 // stays encumbered on the ancestor throughout, settlement still succeeds, and the
 // keepalive goroutine exits.
+//
+// The stream is deliberately outlived rather than timed. After the first event the
+// caller stops consuming and waits for the renewal, which suspends the stream on its
+// own backpressure -- the pump blocks handing over the next event -- so the renewal is
+// observed while the stream is provably mid-flight. A generous abandonment bound is
+// what makes that pause legitimate: it is the bound for a caller who never comes back,
+// and it has its own tests.
 func TestSlowStreamRenewsItsLease(t *testing.T) {
-	// A 300ms lease with a 100ms renewal interval against a stream that takes ~500ms.
-	h := newStreamHarnessWithLease(t, "1000", 300*time.Millisecond)
-	h.reader.pace = 60 * time.Millisecond
+	h := newStreamHarnessWithLease(t, "1000", leaseQuantum, generousStall)
 	h.reader.emit(normalStream(1000, 500)...)
 
 	before := runtime.NumGoroutine()
@@ -158,11 +163,16 @@ func TestSlowStreamRenewsItsLease(t *testing.T) {
 		t.Fatalf("ConverseStream: %v", err)
 	}
 
+	// Take one event, then let the hold renew with the stream still open.
+	if _, ok := <-s.Events(); !ok {
+		t.Fatal("the stream ended before delivering an event")
+	}
+	awaitRenewal(t, h.ledger, s.ReservationID())
+
 	// While the stream is alive the ancestor's headroom stays encumbered: a long
 	// stream must not become invisible to a parent budget partway through.
-	var sawEncumbered bool
-	for ev := range s.Events() {
-		_ = ev
+	sawEncumbered := h.scopeTotals(t, "team").Reserved > 0
+	for range s.Events() {
 		if h.scopeTotals(t, "team").Reserved > 0 {
 			sawEncumbered = true
 		}
@@ -179,8 +189,8 @@ func TestSlowStreamRenewsItsLease(t *testing.T) {
 		t.Fatalf("a renewed stream must still settle: %v", s.Err())
 	}
 
-	// The renewal really happened, rather than the stream merely finishing inside
-	// one lease quantum.
+	// The renewal survives into the settled record, so settlement cannot quietly
+	// discard the renewal history a reconciler reads.
 	r, err := h.ledger.Get(context.Background(), res.ReservationID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -1108,6 +1118,12 @@ func TestStreamActivityFailureDoesNotFailTheStream(t *testing.T) {
 // newStreamHarnessWithLease builds a child-of-parent hierarchy on a real clock with
 // the given lease, so a test can outlive a lease quantum in milliseconds rather than
 // minutes, and so recorded durations are real rather than frozen.
+//
+// The clock stays real because lease expiry is compared against it inside the ledger and
+// renewal is driven by a ticker; freezing it would stop the mechanism under test rather
+// than control it. Tests get their determinism instead from waiting for the renewal
+// itself, and should pass generousStall so the shortened lease does not also shorten the
+// unrelated abandonment bound.
 func newStreamHarnessWithLease(t *testing.T, allocation string, lease time.Duration, opts ...func(*bedrock.Config)) *streamHarness {
 	t.Helper()
 

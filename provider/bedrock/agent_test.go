@@ -948,9 +948,10 @@ func TestAgentSessionTurnsRemainDistinctTransactions(t *testing.T) {
 // 11. A long orchestration outlives its lease quantum. The hold is renewed while
 // the turn is alive, the ancestor's headroom stays encumbered throughout, and
 // settlement still succeeds.
+// Like the streaming case, the turn is outlived rather than timed: the caller takes one
+// event, then waits for the renewal while the pump is blocked handing over the next.
 func TestLongAgentTurnRenewsItsLease(t *testing.T) {
-	h := newAgentHarnessWithLease(t, "1000", 300*time.Millisecond)
-	h.reader.pace = 60 * time.Millisecond
+	h := newAgentHarnessWithLease(t, "1000", leaseQuantum, generousStall)
 	h.reader.emit(normalAgentTurn(sonnetID)...)
 
 	before := runtime.NumGoroutine()
@@ -962,7 +963,12 @@ func TestLongAgentTurnRenewsItsLease(t *testing.T) {
 		t.Fatalf("InvokeAgent: %v", err)
 	}
 
-	var sawEncumbered bool
+	if _, ok := <-s.Events(); !ok {
+		t.Fatal("the turn ended before delivering an event")
+	}
+	awaitRenewal(t, h.ledger, s.ReservationID())
+
+	sawEncumbered := h.scopeTotals(t, "team").Reserved > 0
 	for range s.Events() {
 		if h.scopeTotals(t, "team").Reserved > 0 {
 			sawEncumbered = true
@@ -979,8 +985,7 @@ func TestLongAgentTurnRenewsItsLease(t *testing.T) {
 	if !res.Settled {
 		t.Fatalf("a renewed agent turn must still settle: %v", s.Err())
 	}
-	// The renewal really happened, rather than the turn merely finishing inside one
-	// lease quantum.
+	// The renewal survives into the settled record.
 	r, err := h.ledger.Get(context.Background(), res.ReservationID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)

@@ -1042,9 +1042,13 @@ func TestAbandonedRuntimeStreamStopsRenewingAndExits(t *testing.T) {
 
 // 13b. A long invocation renews its lease while it is live, so a hosted agent that
 // takes longer than a lease quantum does not lose its hold mid-call.
+//
+// The body is read in pieces and the renewal is waited for partway through, so what is
+// asserted is the ordering -- the hold is renewed while the invocation is still live and
+// the caller has not finished reading -- rather than a duration. A generous abandonment
+// bound keeps the pause from being mistaken for a caller who walked away.
 func TestLongRuntimeInvocationRenewsItsLease(t *testing.T) {
-	h := newRuntimeHarnessWithLease(t, "1000", 60*time.Millisecond)
-	// A body slow enough to outlive several lease quanta, delivered in pieces.
+	h := newRuntimeHarnessWithLease(t, "1000", leaseQuantum, generousStall)
 	h.runtime.bodies = []*fakeRuntimeBody{newFakeRuntimeBody("a", "b", "c", "d", "e")}
 
 	s, err := h.client.InvokeAgentRuntime(context.Background(), bedrock.RuntimeRequest{
@@ -1054,7 +1058,19 @@ func TestLongRuntimeInvocationRenewsItsLease(t *testing.T) {
 		t.Fatalf("InvokeAgentRuntime: %v", err)
 	}
 
+	// One read first, so the invocation is unambiguously mid-body when it renews.
 	buf := make([]byte, 8)
+	if _, err := s.Read(buf); err != nil {
+		t.Fatalf("first Read: %v", err)
+	}
+	awaitRenewal(t, h.ledger, s.ReservationID())
+
+	// The hold is still live at this point, which is the whole claim: a renewal that
+	// arrived after the lease had already lapsed would prove nothing.
+	if tot := h.scopeTotals(t, "team"); tot.Reserved != dollars(t, "1.00") {
+		t.Errorf("mid-invocation Reserved = %s, want the renewed hold still live", tot.Reserved)
+	}
+
 	for {
 		_, err := s.Read(buf)
 		if err == io.EOF {
@@ -1063,7 +1079,6 @@ func TestLongRuntimeInvocationRenewsItsLease(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Read: %v", err)
 		}
-		time.Sleep(40 * time.Millisecond)
 	}
 	_ = s.Close()
 

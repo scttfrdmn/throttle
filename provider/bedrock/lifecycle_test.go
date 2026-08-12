@@ -14,6 +14,7 @@ import (
 	"github.com/scttfrdmn/throttle/activity"
 	activitysqlite "github.com/scttfrdmn/throttle/activity/sqlite"
 	"github.com/scttfrdmn/throttle/engine"
+	"github.com/scttfrdmn/throttle/ledger"
 	"github.com/scttfrdmn/throttle/pricing"
 	"github.com/scttfrdmn/throttle/provider/bedrock"
 	"github.com/scttfrdmn/throttle/usage"
@@ -318,6 +319,64 @@ func waitFor(t *testing.T, cond func() bool) {
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for the provider call to start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// generousStall decouples the abandonment bound from the lease, for tests about leases.
+//
+// Config.StreamStallTimeout defaults to the reservation lease, which is generous by
+// construction -- fifteen minutes in production. The lease tests shrink the lease to
+// milliseconds so a renewal can be observed within a test, and that shrinks the
+// abandonment bound with it. The two bounds answer unrelated questions: "does a live
+// request renew before its hold expires?" and "when do we give up on a caller who
+// walked away?". Left coupled, any test that pauses between reads to observe a renewal
+// is also racing its own abandonment timer, and a loaded machine loses that race --
+// which is a fact about the scheduler, not about throttle. Abandonment has its own
+// tests, which set this bound short on purpose.
+func generousStall(c *bedrock.Config) { c.StreamStallTimeout = 30 * time.Second }
+
+// leaseQuantum is the lease the renewal tests run with: short enough that a renewal
+// arrives within a test, long enough that losing the hold would take a stall no
+// ordinary load produces.
+//
+// Renewal happens at a third of the lease, so this leaves roughly four hundred
+// milliseconds of slack between the renewal that must happen and the expiry that must
+// not. The tests wait for the renewal rather than for the clock, so a larger quantum
+// costs only the one renewal interval.
+const leaseQuantum = 600 * time.Millisecond
+
+// awaitRenewal blocks until the hold behind a live request has been renewed at least
+// once.
+//
+// This is what makes the lease tests deterministic. The property under test is that a
+// live request renews its hold comfortably before the lease expires, and the way to
+// assert that is to hold a request open and wait for the renewal to arrive -- not to run
+// one for a duration chosen to probably exceed a renewal interval and check afterwards.
+// Every governed stream here applies backpressure to its caller, so a test that stops
+// consuming suspends the request rather than racing it, and this wait can be as patient
+// as it likes without asserting anything about how promptly a goroutine was scheduled.
+func awaitRenewal(t *testing.T, l ledger.Ledger, reservationID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r, err := l.Get(context.Background(), reservationID)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", reservationID, err)
+		}
+		if r.RenewCount > 0 {
+			return
+		}
+		// Resolved without renewing means the request ended early; the assertions
+		// that follow would be misleading, so fail here where the reason is visible.
+		if r.State != ledger.StatePending {
+			t.Fatalf("reservation %q reached %s without ever renewing its lease",
+				reservationID, r.State)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the hold on %q was never renewed while the request was live",
+				reservationID)
 		}
 		time.Sleep(time.Millisecond)
 	}
