@@ -103,8 +103,13 @@ func integrationClient(t *testing.T) *openai.Client {
 		// Wired here rather than in a second constructor so the streaming test governs
 		// the same budget, the same catalog, and the same ledger as the non-streaming one.
 		StreamClient: openai.Streaming(&client),
-		Engine:       eng,
-		Catalog:      cat,
+		// Both API families against one budget, one engine, one ledger, and one catalog.
+		// That is the arrangement #28 claims is possible, and configuring it here is the
+		// only place the claim is made against the real SDK's own service values rather
+		// than against a fake.
+		ChatClient: openai.ChatCompletions(&client),
+		Engine:     eng,
+		Catalog:    cat,
 	})
 	if err != nil {
 		t.Fatalf("openai.New: %v", err)
@@ -261,6 +266,93 @@ func TestIntegrationRespondStreaming(t *testing.T) {
 	// OpenAI's choice, and this is the record of what it currently does.
 	t.Logf("%d events, %d after the terminal Response (last type %q), served %q, tier %q, usage %v, cost %s",
 		events, afterTerminal-1, lastType, res.ServedModelID, res.Identity.ServiceTier,
+		res.Usage, res.Charge.ActualCost)
+}
+
+// TestIntegrationComplete exercises the governed Chat Completions path against real
+// OpenAI, through the same client, budget, and catalog as the Responses tests above.
+//
+// It confirms the things about this API family that only the live service can confirm,
+// and that a fake cannot establish because the fake is written from the same reading of
+// the documentation as the adapter:
+//
+//   - A real completion carries usage at all, since settlement depends on it.
+//   - prompt_tokens really is inclusive of its cached detail, and completion_tokens of
+//     its reasoning detail. The normalization subtracts on that assumption, and if the
+//     relationship were additive instead, throttle would undercount the text portion --
+//     or, if the subtraction went negative, refuse to settle. Either failure surfaces
+//     here first. Asserted as an inequality rather than by reproducing the arithmetic,
+//     because the point is the inclusion relationship and not a particular count.
+//   - The two families reach the same accounting through one engine and one ledger.
+//     Spend from the Responses tests and from this one accumulate in one budget; if the
+//     two had somehow acquired separate bookkeeping, one of the two would not be here.
+//   - service_tier comes back populated, since #30 prices on the tier that served.
+//
+// Deliberately not exercised: audio. The fixture catalog carries no audio-token rates, so
+// an audio request is expected to be refused before execution under enforcement -- which
+// is behaviour the offline suite pins, and making a live audio call to observe it would
+// spend money to learn nothing new.
+func TestIntegrationComplete(t *testing.T) {
+	ctx := context.Background()
+	client := integrationClient(t)
+
+	res, err := client.Complete(ctx, openai.ChatRequest{
+		BudgetID: "integration",
+		Params: oai.ChatCompletionNewParams{
+			Model: shared.ChatModel(*integrationModel),
+			Messages: []oai.ChatCompletionMessageParamUnion{
+				oai.UserMessage("Reply with exactly the word: ok"),
+			},
+			MaxCompletionTokens: param.NewOpt(int64(16)),
+		},
+		Metadata: map[string]string{"workload": "throttle-integration-chat"},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if res.Completion == nil || res.Completion.ID == "" {
+		t.Error("the live completion should carry an ID")
+	}
+	if res.Usage.Count(usage.InputTokens) == 0 {
+		t.Error("OpenAI reported no input tokens for a Chat Completions request")
+	}
+	if res.Usage.Count(usage.OutputTokens) == 0 && res.Usage.Count(usage.ReasoningTokens) == 0 {
+		t.Error("OpenAI reported no output or reasoning tokens")
+	}
+	if !res.Settled {
+		t.Fatalf("the request did not settle; cost = %s (%s)", res.Cost.Amount, res.Cost.Reason)
+	}
+	if res.Charge.ActualCost <= 0 {
+		t.Errorf("ActualCost = %s, want a positive charge", res.Charge.ActualCost)
+	}
+	if res.Identity.Operation != openai.OperationChatCompletions {
+		t.Errorf("Operation = %q, want %q", res.Identity.Operation, openai.OperationChatCompletions)
+	}
+
+	// The inclusion relationship, checked against the raw usage object rather than the
+	// normalized one, because the normalization is the thing under test.
+	raw := res.Completion.Usage
+	if raw.PromptTokens == 0 {
+		t.Error("the live usage object reported no prompt_tokens")
+	}
+	if d := raw.PromptTokensDetails; d.CachedTokens > raw.PromptTokens {
+		t.Errorf("cached_tokens (%d) exceeds prompt_tokens (%d): the detail counters are not "+
+			"inclusive of the total, and throttle's subtractive normalization is wrong",
+			d.CachedTokens, raw.PromptTokens)
+	}
+	if d := raw.CompletionTokensDetails; d.ReasoningTokens > raw.CompletionTokens {
+		t.Errorf("reasoning_tokens (%d) exceeds completion_tokens (%d): the detail counters are "+
+			"not inclusive of the total", d.ReasoningTokens, raw.CompletionTokens)
+	}
+	// And the normalized text figure is what is left after the details, never negative and
+	// never larger than the total the provider reported.
+	if got := res.Usage.Count(usage.InputTokens); got > raw.PromptTokens {
+		t.Errorf("normalized input_tokens (%d) exceeds the reported prompt_tokens (%d)",
+			got, raw.PromptTokens)
+	}
+
+	t.Logf("model requested %q, served %q, tier %q, usage %v, cost %s",
+		res.Identity.ProviderModelID, res.ServedModelID, res.Identity.ServiceTier,
 		res.Usage, res.Charge.ActualCost)
 }
 

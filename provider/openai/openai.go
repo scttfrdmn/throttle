@@ -1,49 +1,78 @@
-// Package openai adapts the OpenAI Responses API to throttle's accounting model.
+// Package openai adapts OpenAI's own APIs to throttle's accounting model.
 //
-// It is a shim, not a framework. A caller builds a responses.ResponseNewParams
-// exactly as they would for the OpenAI Go SDK, hands it to Client.Respond with a
-// budget ID, and gets back the SDK's own *responses.Response. Nothing about the
-// request or response is reinterpreted, no field is rewritten, and no throttle
-// abstraction stands between the caller and the model. There is deliberately no
-// throttle.Generate or throttle.Chat here: the caller keeps thinking in OpenAI SDK
-// concepts.
+// It is a shim, not a framework. A caller builds the SDK's own request params
+// exactly as they would for the OpenAI Go SDK, hands them to throttle with a budget
+// ID, and gets back the SDK's own response. Nothing about the request or response is
+// reinterpreted, no field is rewritten, and no throttle abstraction stands between
+// the caller and the model. There is deliberately no throttle.Generate or
+// throttle.Chat here: the caller keeps thinking in OpenAI SDK concepts.
 //
 // What the shim adds is the transaction around the call:
 //
 //	estimate -> reserve -> execute -> reconcile
 //
+// # Two API families, one accounting engine
+//
+// Two OpenAI API families are governed, and they stay visibly distinct at the SDK
+// boundary:
+//
+//	Client.Respond            responses.ResponseNewParams  -> *responses.Response
+//	Client.RespondStreaming   responses.ResponseNewParams  -> a pull-loop Stream
+//	Client.Complete           openai.ChatCompletionNewParams -> *openai.ChatCompletion
+//
+// Responses is the newer surface and the one to prefer for new work; OpenAI's own SDK
+// says so on the Chat Completions method. Chat Completions is here as compatibility
+// for real applications that use it, not as throttle's canonical abstraction, and it
+// is emphatically not a common LLM API invented to sit over both.
+//
+// What the two share is the accounting, not the request model. Admission, reservation,
+// pricing, settlement, and the durable record are one code path -- see admit and
+// settleUsage -- because a second accounting engine is how two providers of one budget
+// come to disagree about what was spent. What they do not share is anything that only
+// looks alike: the two usage objects are decomposed by separate normalizers, because
+// their detailed counters stand in different relationships to the totals they break
+// down, and assuming otherwise would misprice one of them. Which family a record came
+// from is the Operation on its identity: "responses", "responses-stream", or
+// "chat-completions".
+//
 // # The boundary
 //
-// OpenAI SDK types stop here. This package converts a Responses reply into
-// usage.Usage and usage.ModelIdentity, prices it through a pricing.Catalog, and
-// hands money.Money to the engine. Nothing in budget, ledger, money, pricing,
-// usage, engine, activity, reconcile, report, or dashboard imports an OpenAI type,
-// which is what keeps the budget engine provider-neutral -- and this package is the
-// evidence that it really is, since it reuses every one of those unchanged.
+// OpenAI SDK types stop here. This package converts an OpenAI reply into usage.Usage
+// and usage.ModelIdentity, prices it through a pricing.Catalog, and hands money.Money
+// to the engine. Nothing in budget, ledger, money, pricing, usage, engine, activity,
+// reconcile, report, or dashboard imports an OpenAI type, which is what keeps the
+// budget engine provider-neutral -- and this package is the evidence that it really
+// is, since it reuses every one of those unchanged for both API families.
 //
 // # What this adapter cannot fully account for
 //
-// Two limits are structural rather than incidental, and the adapter reports both
-// rather than papering over them:
+// Three limits are structural rather than incidental, and the adapter reports all
+// three rather than papering over them:
 //
 // OpenAI charges for several hosted tools in units its API response cannot express
 // -- per call for web search, per GB-day for file storage, per container-session for
 // code interpreter. A request carrying such a tool is settled as an explicitly
 // unresolved cost with a token floor, never as a completed price. See tools.go.
 //
-// A synchronous Responses call cannot be cancelled server-side; OpenAI permits
-// cancellation only for background responses. So a caller who gives up mid-call
-// leaves a genuinely ambiguous outcome, handled the same conservative way Bedrock
-// handles it: the hold stays outstanding rather than being released on a guess.
+// Audio tokens are billed at their own rates, several times the text rates, and the
+// price fixtures throttle ships do not yet carry them. A request that can consume or
+// produce audio is therefore admitted as an incomplete cost -- denied under enforce,
+// allowed under monitor -- and settled as a partial cost with a text floor and the
+// audio dimensions named as unpriced. See audio.go.
+//
+// A synchronous call cannot be cancelled server-side; OpenAI permits cancellation
+// only for background responses. So a caller who gives up mid-call leaves a genuinely
+// ambiguous outcome, handled the same conservative way Bedrock handles it: the hold
+// stays outstanding rather than being released on a guess.
 //
 // # Credentials
 //
 // This package's tests never require OpenAI credentials. Client depends on narrow
-// ResponsesAPI and InputTokenCounter interfaces rather than on *openai.Client, so
-// the whole transaction is exercised against a fake. The adapter never reads, holds,
-// or persists an API key: credentials are the SDK's business, resolved from the
-// environment by openai.NewClient in the usual way. The one test that talks to
-// OpenAI is explicitly opt-in and skips cleanly without credentials.
+// ResponsesAPI, ChatCompletionsAPI, and InputTokenCounter interfaces rather than on
+// *openai.Client, so the whole transaction is exercised against a fake. The adapter
+// never reads, holds, or persists an API key: credentials are the SDK's business,
+// resolved from the environment by openai.NewClient in the usual way. The one test
+// that talks to OpenAI is explicitly opt-in and skips cleanly without credentials.
 package openai
 
 import (
@@ -52,6 +81,7 @@ import (
 	"fmt"
 	"time"
 
+	oai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
 
@@ -73,6 +103,20 @@ type ResponsesAPI interface {
 	New(ctx context.Context, body responses.ResponseNewParams, opts ...option.RequestOption) (*responses.Response, error)
 }
 
+// ChatCompletionsAPI is the slice of the OpenAI client the Chat Completions adapter
+// uses.
+//
+// A separate interface from ResponsesAPI rather than a union of the two, because they
+// are separate API families: the request type, the response type, and the usage object
+// all differ, and a caller who only uses one should not have to supply the other. An
+// openai.Client's Chat.Completions service satisfies it -- see ChatCompletions.
+//
+// Only the non-streaming create is here. Streaming Chat Completions is deliberately
+// not governed yet; see Client.Complete.
+type ChatCompletionsAPI interface {
+	New(ctx context.Context, body oai.ChatCompletionNewParams, opts ...option.RequestOption) (*oai.ChatCompletion, error)
+}
+
 // InputTokenCounter is the optional preflight input token count.
 //
 // Separate from ResponsesAPI because it is a distinct extra round trip a caller may
@@ -89,8 +133,19 @@ type InputTokenCounter interface {
 
 // Errors returned by this package.
 var (
-	// ErrNoClient means the adapter was built without an OpenAI client.
+	// ErrNoClient means the adapter was built without any OpenAI client at all, or a
+	// Responses call was made on a client configured only for Chat Completions.
 	ErrNoClient = errors.New("openai: no Responses client configured")
+
+	// ErrNoChatClient means Complete was called on a client built without a Chat
+	// Completions client.
+	//
+	// Separate from ErrNoClient because the two API families are configured
+	// independently: an application that only uses Chat Completions supplies only that
+	// client, and one that only uses Responses supplies only that. Requiring both would
+	// make each caller carry a dependency on an API they never call, which is precisely
+	// the false commonality this adapter avoids.
+	ErrNoChatClient = errors.New("openai: no Chat Completions client configured")
 
 	// ErrProvider wraps an error returned by OpenAI itself, so a caller can tell a
 	// provider failure from a budget refusal or an accounting failure.
@@ -128,10 +183,17 @@ const DefaultMaxOutputTokens = 4096
 
 // Config configures a Client.
 type Config struct {
-	// Client is the OpenAI Responses service. Required.
+	// Client is the OpenAI Responses service. Required unless ChatClient is set.
 	//
 	// Wrap a real *openai.Client with Responses(c) to satisfy it.
 	Client ResponsesAPI
+
+	// ChatClient enables governed Chat Completions calls. Optional, and independent of
+	// Client: a caller may configure either family, or both against the same underlying
+	// *openai.Client.
+	//
+	// Wrap a real *openai.Client with ChatCompletions(c) to satisfy it.
+	ChatClient ChatCompletionsAPI
 
 	// StreamClient enables governed streaming Responses calls. Optional: a caller who
 	// only makes non-streaming calls needs nothing here, and Client.RespondStreaming
@@ -148,6 +210,12 @@ type Config struct {
 	// Counter enables preflight input token counting via OpenAI's
 	// POST /responses/input_tokens. Optional: it is an extra round trip per request,
 	// so a caller opts in. Without it, input is estimated from content length.
+	//
+	// It applies to Responses calls only. OpenAI publishes no equivalent endpoint for
+	// Chat Completions -- the count endpoint is defined on the Responses resource and
+	// takes Responses-shaped input -- so a Chat Completions estimate is always
+	// heuristic on the input side. Feeding a Chat Completions request through the
+	// Responses counter would be counting a different request.
 	//
 	// Wrap a real *openai.Client with Counter(c) to satisfy it.
 	Counter InputTokenCounter
@@ -188,9 +256,11 @@ type Config struct {
 	StreamStallTimeout time.Duration
 }
 
-// Client is a governed OpenAI Responses client.
+// Client is a governed OpenAI client, covering the Responses and Chat Completions
+// families against one budget engine and one ledger.
 type Client struct {
 	api         ResponsesAPI
+	chatAPI     ChatCompletionsAPI
 	streamAPI   StreamAPI
 	counter     InputTokenCounter
 	engine      *engine.Engine
@@ -203,7 +273,10 @@ type Client struct {
 
 // New builds a governed client.
 func New(cfg Config) (*Client, error) {
-	if cfg.Client == nil {
+	// At least one API family has to be configured; which one is the caller's choice.
+	// Requiring the Responses client specifically would force an application that only
+	// uses Chat Completions to supply a client it never calls.
+	if cfg.Client == nil && cfg.ChatClient == nil {
 		return nil, ErrNoClient
 	}
 	if cfg.Engine == nil {
@@ -224,6 +297,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	c := &Client{
 		api:         cfg.Client,
+		chatAPI:     cfg.ChatClient,
 		streamAPI:   cfg.StreamClient,
 		counter:     cfg.Counter,
 		engine:      cfg.Engine,
@@ -271,13 +345,41 @@ type Request struct {
 	Options []option.RequestOption
 }
 
-// Result is the outcome of a governed call: the provider's own response plus what
-// throttle recorded about it.
+// Result is the outcome of a governed Responses call: the provider's own response plus
+// what throttle recorded about it.
 type Result struct {
 	// Response is the SDK response, unmodified. It may be non-nil even when Respond
 	// returns an error, if the provider answered but accounting failed.
 	Response *responses.Response
 
+	// Accounting is what throttle recorded, in provider-neutral terms.
+	Accounting
+}
+
+// ChatResult is the outcome of a governed Chat Completions call.
+//
+// It differs from Result in the provider payload and in nothing else: the accounting
+// half is the same embedded struct, because the same engine, ledger, and money
+// semantics governed the call. Two accounting shapes for two API families of one
+// provider is how the two come to disagree about what a budget spent.
+type ChatResult struct {
+	// Completion is the SDK response, unmodified. It may be non-nil even when Complete
+	// returns an error, if the provider answered but accounting failed.
+	Completion *oai.ChatCompletion
+
+	// Accounting is what throttle recorded, in provider-neutral terms.
+	Accounting
+}
+
+// Accounting is what throttle recorded about a governed call, in terms that carry no
+// OpenAI type at all.
+//
+// It is embedded rather than duplicated so that a Responses result and a Chat
+// Completions result cannot drift apart in what they report. Everything here is
+// derived by shared code -- see admit and settleUsage -- which is the actual claim
+// this package makes about supporting two API families: the request models stay
+// distinct, the accounting is literally the same.
+type Accounting struct {
 	// Identity is what was actually called. CanonicalModel is empty for OpenAI, which
 	// means throttle does not claim a normalized name for the model, not that anything
 	// failed. ProviderModelID is the caller's exact string; ServedModelID reports
@@ -399,12 +501,16 @@ func (c *Client) Respond(ctx context.Context, req Request) (*Result, error) {
 		requestID = id
 	}
 
+	if c.api == nil {
+		return nil, ErrNoClient
+	}
+
 	p := responseParams(req.Params)
 	est, quote, err := c.estimate(ctx, req.Params, p)
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Identity: est.Identity, Estimate: est, Quote: quote}
+	res := &Result{Accounting: Accounting{Identity: est.Identity, Estimate: est, Quote: quote}}
 
 	// Classified before the call, from the request rather than the response. A hosted
 	// tool's surcharge is incurred by asking for the tool, and the response does not
@@ -412,55 +518,11 @@ func (c *Client) Respond(ctx context.Context, req Request) (*Result, error) {
 	exposure := classifyTools(req.Params.Tools)
 
 	start := c.engine.Now()
-	rec := activity.Record{
-		RequestID: requestID,
-		BudgetID:  req.BudgetID,
-		Identity:  est.Identity,
-		Estimate:  est,
-		Quote:     quote,
-		Status:    activity.StatusPending,
-		StartedAt: start,
-		Metadata:  req.Metadata,
-	}
-
-	tx, dec, err := c.engine.Begin(ctx, engine.Request{
-		BudgetID:  req.BudgetID,
-		RequestID: requestID,
-		Estimate:  est,
-		Identity:  est.Identity,
-		Metadata:  req.Metadata,
-	})
-	res.Decision = dec
-	res.Mode = dec.Mode
-	rec.EnforcementMode = dec.Mode
+	adm, err := c.admit(ctx, req.BudgetID, requestID, est, &res.Accounting, req.Metadata)
 	if err != nil {
-		// A denied request is recorded too. "The budget stopped this" is exactly what an
-		// operator needs to see, and it is invisible if only successful calls are
-		// written.
-		rec.Status = activity.StatusDenied
-		rec.Outcome = activity.OutcomeBudgetDenied
-		if errors.Is(err, engine.ErrCostUnknown) {
-			rec.Outcome = activity.OutcomeUnpriced
-			rec.ActualCost = est.Cost
-		}
-		rec.Error = err.Error()
-		rec.CompletedAt = c.engine.Now()
-		c.record(context.WithoutCancel(ctx), rec, false)
 		return res, err
 	}
-	res.ReservationID = tx.Reservation().ID
-	rec.ReservationID = res.ReservationID
-	rec.Reserved = tx.Reservation().Amount
-	rec.Scopes = scopesOf(tx.Reservation())
-
-	// Bookkeeping must survive the caller's context ending, or a timed-out request
-	// would strand its own hold.
-	settleCtx := context.WithoutCancel(ctx)
-
-	// Written before the call, so a process that dies mid-request leaves evidence that
-	// money may have moved. Without this, a crash is indistinguishable from a request
-	// that never happened.
-	c.record(settleCtx, rec, true)
+	tx, rec, settleCtx := adm.tx, adm.rec, adm.settleCtx
 
 	out, callErr := c.api.New(ctx, req.Params, req.Options...)
 	res.Response = out
@@ -486,94 +548,11 @@ func (c *Client) Respond(ctx context.Context, req Request) (*Result, error) {
 
 	u, normErr := normalizeUsage(out.Usage)
 	if normErr != nil {
-		// The provider's own figures contradict each other, so there is nothing
-		// trustworthy to charge. The hold stays outstanding rather than being released:
-		// the request ran, and the usage object proves tokens were consumed even though
-		// its arithmetic does not add up.
-		res.Usage = u
-		rec.ActualUsage = u
-		rec.Status = activity.StatusOutstanding
-		rec.Outcome = activity.OutcomeAccountingError
-		rec.ActualCost = usage.UnknownCost(normErr.Error())
-		res.Cost = rec.ActualCost
-		err := fmt.Errorf("%w: %w, so reservation %s is left outstanding", ErrAccounting, normErr, res.ReservationID)
-		rec.Error = err.Error()
-		c.record(settleCtx, rec, false)
+		return res, c.inconsistentUsage(&res.Accounting, rec, settleCtx, u, normErr)
+	}
+
+	if err := c.settleUsage(&res.Accounting, &rec, settleCtx, tx, u, exposure, callErr); err != nil {
 		return res, err
-	}
-
-	res.Usage = u
-	rec.Identity = res.Identity
-	rec.ActualUsage = u
-	if res.ServedModelID != "" {
-		rec.Metadata = withServedModel(rec.Metadata, res.ServedModelID)
-	}
-
-	actual := usage.Actual{Identity: res.Identity, Usage: u}
-
-	cost, quoteErr := c.priceActual(settleCtx, quote, res.Identity, u)
-
-	// A hosted tool whose charge OpenAI bills outside the usage object means the token
-	// cost is a floor, however completely the tokens themselves priced. Downgrading a
-	// known cost here is the point: enforce mode must never report such a request as
-	// fully priced.
-	if !exposure.complete() {
-		cost = incompleteForTools(cost, exposure)
-	}
-	actual.Cost = cost
-	res.Cost = cost
-	rec.ActualCost = cost
-
-	if !cost.Known() {
-		// The request ran and cost money throttle cannot name. The hold stays
-		// encumbered: releasing it would report spent money as available, and settling
-		// the partial floor as a total would understate real spend.
-		if markErr := tx.MarkUnresolved(settleCtx, actual); markErr != nil {
-			rec.Status = activity.StatusOutstanding
-			rec.Error = markErr.Error()
-			c.record(settleCtx, rec, false)
-			return res, fmt.Errorf("%w: %w", ErrAccounting, markErr)
-		}
-		res.Unresolved = true
-		rec.Status = activity.StatusUnresolved
-		rec.Outcome = activity.OutcomeUnpriced
-		err := fmt.Errorf("%w: %s: reservation %s stays encumbered pending reconciliation",
-			ErrCostUnresolved, cost.Reason, res.ReservationID)
-		rec.Error = err.Error()
-		c.record(settleCtx, rec, false)
-		if callErr != nil {
-			return res, fmt.Errorf("%w (the provider also returned: %v)", err, callErr)
-		}
-		return res, err
-	}
-
-	charge, setErr := tx.Settle(settleCtx, actual)
-	if setErr != nil {
-		rec.Status = activity.StatusOutstanding
-		rec.Outcome = activity.OutcomeAccountingError
-		err := fmt.Errorf("%w: reservation %s is left outstanding: %w", ErrAccounting, res.ReservationID, setErr)
-		if quoteErr != nil {
-			err = fmt.Errorf("%w (pricing: %v)", err, quoteErr)
-		}
-		rec.Error = err.Error()
-		c.record(settleCtx, rec, false)
-		if callErr != nil {
-			return res, fmt.Errorf("%w (the provider also returned: %v)", err, callErr)
-		}
-		return res, err
-	}
-	res.Charge = charge
-	res.Settled = true
-	rec.Status = activity.StatusSettled
-	rec.Outcome = activity.OutcomeSuccess
-
-	// Settled, but the provider still reported a failure alongside the usage it billed
-	// for. The caller needs to know both.
-	if callErr != nil {
-		rec.Outcome = activity.OutcomeProviderError
-		rec.Error = redactProviderError(callErr)
-		c.record(settleCtx, rec, false)
-		return res, fmt.Errorf("%w: %w (usage was recorded)", ErrProvider, callErr)
 	}
 
 	// A response that stopped early or failed, yet reported usage, is settled on that
@@ -584,55 +563,29 @@ func (c *Client) Respond(ctx context.Context, req Request) (*Result, error) {
 		rec.Error = responseReason(out)
 	}
 	c.record(settleCtx, rec, false)
-	if err := statusError(out); err != nil {
-		return res, err
-	}
-	return res, nil
+	return res, statusError(out)
 }
 
 // finishWithoutUsage handles every path where the provider reported no usage.
 //
-// Split out because there are four genuinely different endings here and inlining
-// them made the shape of Respond hard to see: an interrupted call, a provider error,
-// a provider-reported failure, and a success that reported nothing.
+// Four genuinely different endings: an interrupted call, a provider error, a
+// provider-reported failure, and a success that reported nothing. Three of them are
+// shared with Chat Completions and delegate to lifecycle.go, so a request in one of
+// those states is recorded identically whichever API family it came from.
+//
+// The third is not shared, and that is a fact about the two APIs rather than an
+// oversight. A Responses response carries an explicit status field, so a response that
+// says it failed and reported no usage is evidence nothing was billed, and the hold can
+// honestly be released. A Chat Completion has only a finish reason, which describes
+// generation and cannot distinguish never-served from served-and-truncated -- so it has
+// no equivalent branch.
 func (c *Client) finishWithoutUsage(ctx, settleCtx context.Context, tx *engine.Transaction, res *Result, rec activity.Record, out *responses.Response, callErr error) error {
-	// Cancellation is not the same as a clean provider refusal: OpenAI cannot cancel a
-	// synchronous response server-side, so the request may have been served and billed
-	// before the caller gave up, and no response came back to prove it either way.
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		rec.Status = activity.StatusOutstanding
-		rec.Outcome = activity.OutcomeCancelled
-		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			rec.Outcome = activity.OutcomeTimeout
-		}
-		rec.ActualCost = usage.UnknownCost("the call was interrupted before any usage was reported")
-		res.Cost = rec.ActualCost
-		err := fmt.Errorf("%w: the call was interrupted (%v), so reservation %s is left outstanding (the provider returned: %v)",
-			ErrOutcomeUnknown, ctxErr, res.ReservationID, callErr)
-		rec.Error = err.Error()
-		c.record(settleCtx, rec, false)
-		return err
+		return c.interrupted(&res.Accounting, rec, settleCtx, ctxErr, callErr)
 	}
 
 	if callErr != nil {
-		// A provider-side error with no usage means nothing was billed, so the headroom
-		// goes back. This is where an OpenAI 429 lands, and it is recorded as a provider
-		// error: it is not a budget denial, and conflating the two would send a caller
-		// looking at the wrong system.
-		rec.Status = activity.StatusReleased
-		rec.Outcome = activity.OutcomeProviderError
-		rec.ActualCost = usage.KnownCost(0)
-		res.Cost = rec.ActualCost
-		if relErr := tx.Release(settleCtx); relErr != nil {
-			err := fmt.Errorf("%w: %w (releasing reservation %s also failed: %v)",
-				ErrProvider, callErr, res.ReservationID, relErr)
-			rec.Error = err.Error()
-			c.record(settleCtx, rec, false)
-			return err
-		}
-		rec.Error = redactProviderError(callErr)
-		c.record(settleCtx, rec, false)
-		return fmt.Errorf("%w: %w", ErrProvider, callErr)
+		return c.providerErrorWithoutUsage(&res.Accounting, rec, settleCtx, tx, callErr)
 	}
 
 	// No transport error, but the response itself says it failed or stopped early and
@@ -659,34 +612,7 @@ func (c *Client) finishWithoutUsage(ctx, settleCtx context.Context, tx *engine.T
 	// A completed response with no usage metadata is not something OpenAI should
 	// produce, and the honest answer is to admit the accounting is unresolvable rather
 	// than record a zero-cost request. The hold stays outstanding.
-	rec.Status = activity.StatusOutstanding
-	rec.Outcome = activity.OutcomeAccountingError
-	rec.ActualCost = usage.UnknownCost("the provider reported no usage metadata")
-	res.Cost = rec.ActualCost
-	err := fmt.Errorf("%w: the provider returned no usage metadata, so reservation %s is left outstanding",
-		ErrAccounting, res.ReservationID)
-	rec.Error = err.Error()
-	c.record(settleCtx, rec, false)
-	return err
-}
-
-// incompleteForTools downgrades a cost to reflect a charge throttle cannot see.
-//
-// The token figures may have priced perfectly; the point is that they are not the
-// whole bill. A known cost becomes a floor, and a cost that was already partial or
-// unknown keeps its own reason alongside this one -- both facts are true and a
-// reconciliation needs both.
-func incompleteForTools(cost usage.Cost, e toolExposure) usage.Cost {
-	reason := fmt.Sprintf("OpenAI bills %s outside the response's usage object (per call, per stored GB, or per container session), so the token cost is a floor rather than a total",
-		joinAnd(e.unaccounted))
-	switch cost.State() {
-	case usage.CostKnown:
-		return usage.PartialCost(cost.Amount, nil, reason)
-	case usage.CostPartial:
-		return usage.PartialCost(cost.Amount, cost.Unpriced, cost.Reason+"; "+reason)
-	default:
-		return usage.UnknownCost(cost.Reason + "; " + reason)
-	}
+	return c.noUsageMetadata(&res.Accounting, rec, settleCtx)
 }
 
 // priceActual prices observed usage, preferring the quote captured at admission.

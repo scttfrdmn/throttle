@@ -400,12 +400,21 @@ func displayModel(id usage.ModelIdentity) (string, bool) {
 
 // tokenDimensions are the dimensions a display may group as "tokens". Anything else
 // is shown as itself.
+//
+// Audio tokens belong here because they are tokens: a multimodal model reports a token
+// count and bills per token, at its own rate. Only the rate differs, and a rate is not
+// what this map is about. Leaving them out would put a "non-token" badge beside a token
+// count, which is a false statement about the unit rather than a cosmetic gap -- and it
+// would tell a reader the figure needs no per-token rate, which is precisely the rate
+// whose absence made the cost a floor.
 var tokenDimensions = map[usage.Dimension]bool{
-	usage.InputTokens:      true,
-	usage.OutputTokens:     true,
-	usage.ReasoningTokens:  true,
-	usage.CacheReadTokens:  true,
-	usage.CacheWriteTokens: true,
+	usage.InputTokens:       true,
+	usage.OutputTokens:      true,
+	usage.ReasoningTokens:   true,
+	usage.CacheReadTokens:   true,
+	usage.CacheWriteTokens:  true,
+	usage.InputAudioTokens:  true,
+	usage.OutputAudioTokens: true,
 }
 
 // usageItems flattens usage into a stable ordered list.
@@ -423,9 +432,13 @@ func usageItems(u usage.Usage, unpriced []usage.Dimension) []UsageItem {
 		blocked[d] = true
 	}
 
+	// Audio sits beside the text figure in its own direction, because the two are the
+	// disjoint halves of one reported total and a reader checking the arithmetic should
+	// not have to scan past the cache rows to find the other half.
 	preferred := []usage.Dimension{
-		usage.InputTokens, usage.OutputTokens, usage.ReasoningTokens,
-		usage.CacheReadTokens, usage.CacheWriteTokens,
+		usage.InputTokens, usage.InputAudioTokens,
+		usage.OutputTokens, usage.OutputAudioTokens,
+		usage.ReasoningTokens, usage.CacheReadTokens, usage.CacheWriteTokens,
 	}
 	seen := map[usage.Dimension]bool{}
 	var out []UsageItem

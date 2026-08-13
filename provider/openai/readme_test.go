@@ -114,6 +114,38 @@ func ExampleClient_RespondStreaming_readme() {
 	_ = stream.Result() // the accounting, available once the stream is terminal.
 }
 
+// Chat Completions: a second client on the same config, the SDK's own params.
+func ExampleClient_Complete_readme() {
+	ctx := context.Background()
+	client, eng, cat := readmeOpenAIPrerequisites(ctx)
+
+	governed, err := openai.New(openai.Config{
+		Client:     openai.Responses(&client),
+		Engine:     eng,
+		Catalog:    cat,
+		ChatClient: openai.ChatCompletions(&client),
+	})
+	if err != nil {
+		return
+	}
+
+	res, err := governed.Complete(ctx, openai.ChatRequest{
+		BudgetID: "agents",
+		Params: oai.ChatCompletionNewParams{ // the SDK's own params, sent verbatim
+			Model: shared.ChatModel("gpt-5.1"),
+			Messages: []oai.ChatCompletionMessageParamUnion{
+				oai.UserMessage("Summarize this in one sentence."),
+			},
+		},
+	})
+	if err != nil {
+		return
+	}
+	// res.Completion is OpenAI's own *oai.ChatCompletion; the accounting fields are the
+	// same ones Respond returns.
+	_, _, _, _ = res.Completion, res.Estimate, res.Cost, res.Charge
+}
+
 // readmeOpenAIPrerequisites is the "...as above" the README's streaming example elides, so
 // it can show only the lines it is actually about.
 func readmeOpenAIPrerequisites(ctx context.Context) (client oai.Client, eng *engine.Engine, cat *pricing.Static) {

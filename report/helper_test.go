@@ -26,6 +26,11 @@ func dollars(d int64) money.Money { return money.Money(d) * money.PerDollar }
 
 func cents(c int64) money.Money { return money.Money(c) * money.PerDollar / 100 }
 
+// micros is a figure in the storage unit itself, for per-request token costs that are
+// smaller than a cent. Written out rather than as a fraction of a dollar because the
+// arithmetic a test is pinning is arithmetic in microdollars.
+func micros(m int64) money.Money { return money.Money(m) }
+
 // base is the reference instant: the start of a month, so period boundaries land
 // on round numbers in assertions.
 var base = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)

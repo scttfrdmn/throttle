@@ -86,25 +86,21 @@ var toolCharges = map[string]toolBilling{
 	"apply_patch":               billedOutsideUsage,
 }
 
-// toolExposure describes what a request's tools mean for its accounting.
-type toolExposure struct {
-	// unaccounted names the tool types whose charges cannot be derived from the
-	// response, sorted, for the reason string on an unresolved cost.
-	unaccounted []string
-}
-
-// complete reports whether every billable dimension of this request can be
-// accounted for from the response.
-func (e toolExposure) complete() bool { return len(e.unaccounted) == 0 }
-
-// classifyTools examines a request's tools and reports whether the response's usage
-// object can account for the whole OpenAI charge.
+// classifyTools examines a Responses request's tools and reports whether the response's
+// usage object can account for the whole OpenAI charge.
 //
 // An unrecognized tool type counts as unaccounted. A tool this build has never heard
 // of is exactly the case where assuming token-only would be wrong: OpenAI adds hosted
 // tools with their own pricing, and a throttle that silently called such a request
 // fully priced would understate real spend with no indication anything was missed.
-func classifyTools(tools []responses.ToolUnionParam) toolExposure {
+//
+// It returns the same exposure type the Chat Completions classifier does. Shared because
+// the *conclusion* is provider-neutral -- a list of things whose charge cannot be derived
+// from the reply -- while the two functions that reach it are not, since the two API
+// families offer different tools through different union types and one of them expresses
+// web search as a request field rather than a tool at all. Only the audio half is left
+// empty here: the Responses adapter has no audio-bearing path in this slice.
+func classifyTools(tools []responses.ToolUnionParam) exposure {
 	seen := map[string]bool{}
 	for _, t := range tools {
 		name := toolType(t)
@@ -123,14 +119,14 @@ func classifyTools(tools []responses.ToolUnionParam) toolExposure {
 		}
 	}
 	if len(seen) == 0 {
-		return toolExposure{}
+		return exposure{}
 	}
 	out := make([]string, 0, len(seen))
 	for n := range seen {
 		out = append(out, n)
 	}
 	sort.Strings(out)
-	return toolExposure{unaccounted: out}
+	return exposure{tools: out}
 }
 
 // toolType reports the discriminator of a tool param union.

@@ -53,7 +53,8 @@ period, optionally capped, so a slow month funds a busy one.
 
 Governed calls work end to end against two providers: AWS Bedrock — `Converse`,
 `ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime` — and
-OpenAI's Responses API, streaming and non-streaming. Around them:
+OpenAI, both its Responses API (streaming and non-streaming) and its older Chat
+Completions API (non-streaming). Around them:
 
 - **Budgets** with arbitrary envelopes — `monthly` is shorthand for the same period rule a
   two-year grant uses — plus linear pacing, banking, time-based borrowing, rollover with an
@@ -70,7 +71,7 @@ OpenAI's Responses API, streaming and non-streaming. Around them:
 - **A local SQLite ledger and activity store.** No server, no account, no network calls of
   throttle's own.
 
-Not yet: Chat Completions, Anthropic direct, and Gemini. Those adapters do
+Not yet: streaming Chat Completions, Anthropic direct, and Gemini. Those adapters do
 not exist — nothing here supports them today. Pricing ships as a versioned fixture catalog
 rather than a live price-list sync, and the worker that ingests delayed AgentCore
 runtime-resource usage is not written, though the data model and join keys for it are.
@@ -246,10 +247,10 @@ scanned 18 / repaired 3 / consistent 10 / unresolved 3 / awaiting data 2
 
 ## Governing a call
 
-There are two direct adapters today, **AWS Bedrock** and **OpenAI Responses**. Each is a
+There are two direct adapters today, **AWS Bedrock** and **OpenAI**. Each is a
 shim around that provider's own client rather than a replacement for it: the request and
 the response stay the SDK's own types, and there is deliberately no generic
-`throttle.Generate` in front of them. What the two share is the accounting — one budget
+`throttle.Generate` in front of them. What they share is the accounting — one budget
 engine, one ledger, one set of money semantics — not an invented common API.
 
 ### AWS Bedrock
@@ -528,6 +529,43 @@ Because a request can be served by a different tier than it asked for, and tiers
 price differently, throttle settles on the tier OpenAI *reported* serving. When
 that is not observable the request is recorded as pricing-unresolved rather than
 priced at the standard rate.
+
+### OpenAI Chat Completions
+
+Responses is the surface to write new code against, and the one above is the example to
+copy. Chat Completions is here because applications that already use it should not have to
+be rewritten to be governed — so it is a second client on the same `openai.Config`,
+sharing one budget, one ledger, and one price catalog:
+
+```go
+governed, err := openai.New(openai.Config{
+	// ...as above, plus:
+	ChatClient: openai.ChatCompletions(&client),
+})
+
+res, err := governed.Complete(ctx, openai.ChatRequest{
+	BudgetID: "agents",
+	Params: oai.ChatCompletionNewParams{ // the SDK's own params, sent verbatim
+		Model: shared.ChatModel("gpt-5.1"),
+		Messages: []oai.ChatCompletionMessageParamUnion{
+			oai.UserMessage("Summarize this in one sentence."),
+		},
+	},
+})
+// res.Completion is OpenAI's own *oai.ChatCompletion; the accounting fields are the same
+// ones Respond returns.
+```
+
+The two API families stay visibly distinct at the SDK boundary — there is no common
+request type in front of them — and identical underneath it. Requests are told apart in
+the dashboard by their operation, `chat-completions` against `responses`, which is the
+existing column rather than a new one. Streaming Chat Completions is not supported yet.
+
+One asymmetry worth knowing: an audio request is priced only as far as its rates go. Audio
+input and output are separate token dimensions billed at their own rates, so when the
+catalog has no audio rates for the model, the request is refused before the call under
+enforcement, and under monitoring it settles as the text cost plus the two unpriced audio
+dimensions by name — a floor, never a total, and never zero.
 
 ## Architectural rules
 

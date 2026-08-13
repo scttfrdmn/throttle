@@ -1,6 +1,7 @@
 package openai
 
 import (
+	oai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 
@@ -19,13 +20,12 @@ const AccessProvider = "openai"
 // Publisher is who made the models this adapter reaches.
 const Publisher = "openai"
 
-// The Responses API calls this adapter governs.
+// The OpenAI API calls this adapter governs.
 //
-// Named operations rather than bare strings, and distinct from each other and from
-// any future Chat Completions operation, because each is a separate billable shape:
-// an operation is what tells a later reader which API a stranded record belongs to,
-// and Chat Completions reports a differently-shaped usage object for what looks
-// like the same work.
+// Named operations rather than bare strings, and distinct from each other, because
+// each is a separate billable shape: an operation is what tells a later reader which
+// API a stranded record belongs to, and Chat Completions reports a
+// differently-shaped usage object for what looks like the same work.
 //
 // Streaming is a separate operation for a narrower reason. The two forms consume
 // identical tokens and are priced by identical code, so the distinction is not about
@@ -33,9 +33,17 @@ const Publisher = "openai"
 // differently depending on whether usage was supposed to arrive in a return value or
 // in a terminal event. The hyphenated form follows the same convention as Bedrock's
 // converse-stream.
+//
+// The operation is the *only* place the API family is recorded, which is why it is a
+// closed set of named constants rather than something derived. A report or dashboard
+// that needs to tell the three apart reads Identity.Operation, an opaque
+// provider-call string that already exists on every record; adding a top-level
+// "api family" field to the neutral schema would be inventing a cross-provider
+// concept to describe one provider's product history.
 const (
 	OperationResponses       = "responses"
 	OperationResponsesStream = "responses-stream"
+	OperationChatCompletions = "chat-completions"
 )
 
 // Identify derives an identity from the model string the caller sent.
@@ -68,27 +76,52 @@ func Identify(modelID string, tier string) usage.ModelIdentity {
 // model this build has never heard of must reach the provider unmodified.
 func modelOf(m shared.ResponsesModel) string { return string(m) }
 
-// tierOf reads a service tier from a request or a response.
+// tierOf reads a service tier from a Responses request or response.
 //
-// One function for both directions because OpenAI uses one schema for both, and
-// because which of them is authoritative depends on the moment: the request's tier
-// selects a price at admission, and the response's tier -- which may differ -- is
-// what actually served the call.
-//
-// "auto" is normalized away. It is not a tier, it is an instruction to resolve one
-// server-side from project configuration, so recording it as an identity's tier
-// would name a price sheet that does not exist. An empty tier is the honest
-// admission-time state for an auto request, and the response reports what it
-// resolved to.
-func tierOf(t responses.ResponseServiceTier) string {
-	if t == responses.ResponseServiceTierAuto {
-		return ""
-	}
-	return string(t)
-}
+// One function for both directions because the Responses API uses one schema for
+// both, and because which of them is authoritative depends on the moment: the
+// request's tier selects a price at admission, and the response's tier -- which may
+// differ -- is what actually served the call. See normalizeTier for the rule.
+func tierOf(t responses.ResponseServiceTier) string { return normalizeTier(string(t)) }
 
 // requestTier reads the tier out of request params, which the SDK types
 // differently from the response's despite the identical value set.
 func requestTier(t responses.ResponseNewParamsServiceTier) string {
 	return tierOf(responses.ResponseServiceTier(t))
+}
+
+// chatModelOf reads the model out of a Chat Completions request.
+//
+// shared.ChatModel is an alias for string, exactly like shared.ResponsesModel, so any
+// model name is valid at the type level here too. A model this build has never heard
+// of reaches OpenAI unmodified and identifies as itself, which is checked by test:
+// nothing about identity requires the fixtures or a catalog to recognize the string.
+func chatModelOf(m shared.ChatModel) string { return string(m) }
+
+// chatTierOf reads a service tier from a Chat Completions response, and
+// chatRequestTier from its request params.
+//
+// Deliberately not the same functions as tierOf and requestTier despite the value sets
+// being identical -- auto, default, flex, scale, priority, fast in both APIs -- because
+// the SDK declares four separate named string types and converting between two API
+// families' enums would assert that OpenAI intends them to stay identical. It has
+// already diverged the two APIs elsewhere. The normalization rule *is* shared, by
+// routing through normalizeTier, since that rule is throttle's own.
+func chatTierOf(t oai.ChatCompletionServiceTier) string { return normalizeTier(string(t)) }
+
+func chatRequestTier(t oai.ChatCompletionNewParamsServiceTier) string {
+	return normalizeTier(string(t))
+}
+
+// normalizeTier applies throttle's one rule about service tiers.
+//
+// "auto" is normalized away. It is not a tier, it is an instruction to resolve one
+// server-side from project configuration, so recording it as an identity's tier would
+// name a price sheet that does not exist. An empty tier is the honest admission-time
+// state for an auto request, and the response reports what it resolved to.
+func normalizeTier(t string) string {
+	if t == "auto" {
+		return ""
+	}
+	return t
 }

@@ -40,6 +40,23 @@ const (
 	// dearer. They are separate dimensions because they carry separate prices.
 	CacheReadTokens  Dimension = "cache_read_tokens"
 	CacheWriteTokens Dimension = "cache_write_tokens"
+
+	// InputAudioTokens and OutputAudioTokens are audio carried through a
+	// token-billed multimodal model: the provider reports a token count, not a
+	// duration, and prices it per token like text -- but at its own rate, which is
+	// commonly several times the text rate in each direction.
+	//
+	// They are distinct from AudioSeconds, which belongs to models genuinely
+	// documented as duration-billed. Substituting one for the other would either
+	// invent a duration the provider never reported or charge audio at a text rate;
+	// both are exactly the sort of quiet mispricing this package exists to prevent.
+	//
+	// They are distinct from InputTokens and OutputTokens for the same reason
+	// CacheReadTokens is: a separate price means a separate dimension. An adapter
+	// that folded audio into the text counts would charge 6-13x too little on the
+	// providers observed so far, and would do so invisibly.
+	InputAudioTokens  Dimension = "input_audio_tokens"
+	OutputAudioTokens Dimension = "output_audio_tokens"
 )
 
 // Dimensions beyond text, named here so the first adapter to need one does not

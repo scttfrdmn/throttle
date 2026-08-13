@@ -341,11 +341,20 @@ func scopeList(scopes []activity.Scope) string {
 // Tokens are summarized as in/out because that is what a reader scans, and any other
 // dimension is named rather than dropped: not all activity is token-based, and a
 // dimension throttle has never seen must not vanish because the UI predates it.
+//
+// Audio tokens count into their direction and are then named again on their own, which
+// looks like redundancy and is not. Counting them in keeps the figure equal to the total
+// the provider reported, so a reader comparing the cell against a provider invoice is
+// comparing the same number. Naming them separately keeps an audio request from looking
+// like a text request of the same size, which it is not: the same count costs several
+// times more, and the summary cell is the one place a reader scans before deciding
+// whether the money is worth a second look.
 func usageSummary(items []report.UsageItem) string {
 	if len(items) == 0 {
 		return "—"
 	}
 	var in, out int64
+	var inAudio, outAudio int64
 	var other []string
 	haveTokens := false
 	for _, it := range items {
@@ -356,6 +365,14 @@ func usageSummary(items []report.UsageItem) string {
 		case "output_tokens", "reasoning_tokens":
 			out += it.Count
 			haveTokens = true
+		case "input_audio_tokens":
+			in += it.Count
+			inAudio += it.Count
+			haveTokens = true
+		case "output_audio_tokens":
+			out += it.Count
+			outAudio += it.Count
+			haveTokens = true
 		default:
 			other = append(other, fmt.Sprintf("%s %s", group(uint64(abs64(it.Count))), shortDimension(it.Dimension)))
 		}
@@ -363,6 +380,10 @@ func usageSummary(items []report.UsageItem) string {
 	var parts []string
 	if haveTokens {
 		parts = append(parts, fmt.Sprintf("%s in / %s out", group(uint64(in)), group(uint64(out))))
+	}
+	if inAudio > 0 || outAudio > 0 {
+		parts = append(parts, fmt.Sprintf("audio %s in / %s out",
+			group(uint64(abs64(inAudio))), group(uint64(abs64(outAudio)))))
 	}
 	parts = append(parts, other...)
 	return strings.Join(parts, " · ")

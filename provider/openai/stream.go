@@ -204,9 +204,9 @@ type Stream struct {
 	// rather than about wall clock.
 	ticket atomic.Uint64
 
-	// exposure is the tool classification from the request, which decides whether a
-	// fully priced token cost is nonetheless a floor. Read at the terminal state.
-	exposure toolExposure
+	// exposure is the classification from the request, which decides whether a fully
+	// priced token cost is nonetheless a floor. Read at the terminal state.
+	exposure exposure
 
 	// rec is the activity record in progress. Written before the stream is handed
 	// out and then only inside the terminal accounting, which runs once.
@@ -340,14 +340,14 @@ func (c *Client) RespondStreaming(ctx context.Context, req StreamRequest) (*Stre
 		return nil, err
 	}
 
-	res := &Result{
+	res := &Result{Accounting: Accounting{
 		Identity:      est.Identity,
 		Estimate:      est,
 		Quote:         quote,
 		Mode:          dec.Mode,
 		Decision:      dec,
 		ReservationID: tx.Reservation().ID,
-	}
+	}}
 	rec.ReservationID = res.ReservationID
 	rec.Reserved = tx.Reservation().Amount
 	rec.Scopes = scopesOf(tx.Reservation())
@@ -724,7 +724,7 @@ func (s *Stream) settle(out *responses.Response, res *Result) {
 	// cost is a floor, however completely the tokens themselves priced. Streaming does
 	// not change that: the events said nothing about the surcharge either.
 	if !s.exposure.complete() {
-		cost = incompleteForTools(cost, s.exposure)
+		cost = s.exposure.downgrade(cost)
 	}
 	actual.Cost = cost
 	res.Cost = cost
