@@ -389,12 +389,22 @@ model the provider never named, makes the whole outer transaction partial.
 `operation` is `invoke-agent`, which is what tells a later reader that a stranded row
 belongs to a long-running compound turn.
 
-Streaming uses exactly these statuses and adds none. It reaches **outstanding** more
-often than a single round trip does, because Bedrock reports usage only in the
-terminal metadata event: a stream that is closed, cancelled, abandoned, or broken
-before that event ran and cannot be measured. `operation` distinguishes such a
-record — `converse-stream` rather than `converse` — which is what tells a later
+Streaming uses exactly these statuses and adds none, and it uses this schema unchanged:
+a streamed request and a single round trip that consumed the same tokens produce
+byte-identical accounting, differing only in `operation` and the two streaming
+durations. Streaming reaches **outstanding** more often than a single round trip does,
+because usage arrives only in a terminal event: a stream that is closed, cancelled,
+abandoned, or broken before that event ran and cannot be measured. So does a stream
+that simply stopped producing events, because a clean end of stream is not a
+completion. `operation` distinguishes such a record — `converse-stream` rather than
+`converse`, `responses-stream` rather than `responses` — which is what tells a later
 reader that a stranded `pending` row belongs to a long-lived stream.
+
+Nothing about a stream's *shape* reaches the record. There is no event log, no sequence
+number, and no per-event row: a stream of any length produces the same two writes as a
+single call, the pending row and its resolution. Crash recovery works from those
+normalized durable facts — the captured quote, the identity, the reported usage — so a
+stranded stream is reconciled without replaying events and without any provider SDK.
 
 A hosted runtime invocation adds no statuses and reaches **unresolved** on *every*
 path that touched the runtime, success included, because its resource cost is never

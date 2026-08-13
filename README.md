@@ -53,7 +53,7 @@ period, optionally capped, so a slow month funds a busy one.
 
 Governed calls work end to end against two providers: AWS Bedrock — `Converse`,
 `ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime` — and
-OpenAI's Responses API, non-streaming. Around them:
+OpenAI's Responses API, streaming and non-streaming. Around them:
 
 - **Budgets** with arbitrary envelopes — `monthly` is shorthand for the same period rule a
   two-year grant uses — plus linear pacing, banking, time-based borrowing, rollover with an
@@ -70,7 +70,7 @@ OpenAI's Responses API, non-streaming. Around them:
 - **A local SQLite ledger and activity store.** No server, no account, no network calls of
   throttle's own.
 
-Not yet: OpenAI streaming, Chat Completions, Anthropic direct, and Gemini. Those adapters do
+Not yet: Chat Completions, Anthropic direct, and Gemini. Those adapters do
 not exist — nothing here supports them today. Pricing ships as a versioned fixture catalog
 rather than a live price-list sync, and the worker that ingests delayed AgentCore
 runtime-resource usage is not written, though the data model and join keys for it are.
@@ -244,9 +244,17 @@ genuinely unknown stays unknown and stays encumbered; it does not become a tidy 
 scanned 18 / repaired 3 / consistent 10 / unresolved 3 / awaiting data 2
 ```
 
-Governing a Bedrock call is a shim around the real client, not a replacement for
-it — the request and response are the SDK's own types. In full, against a budget
-`config apply` already stored:
+## Governing a call
+
+There are two direct adapters today, **AWS Bedrock** and **OpenAI Responses**. Each is a
+shim around that provider's own client rather than a replacement for it: the request and
+the response stay the SDK's own types, and there is deliberately no generic
+`throttle.Generate` in front of them. What the two share is the accounting — one budget
+engine, one ledger, one set of money semantics — not an invented common API.
+
+### AWS Bedrock
+
+In full, against a budget `config apply` already stored:
 
 ```go
 ctx := context.Background()
@@ -373,7 +381,7 @@ Action groups, knowledge-base lookups, and guardrails are counted and never pric
 service reports no billable quantity for them, so their cost lands on the AWS bill
 outside throttle's view, and the record says so rather than implying they were free.
 
-### A hosted agent: two places to govern, and only one of them is real-time
+#### A hosted agent: two places to govern, and only one of them is real-time
 
 AgentCore runs *your own* agent code and bills for the compute it consumed, so there
 are two distinct accounting positions — and the useful one is probably not the one you
@@ -437,6 +445,89 @@ session, and trace identifiers that a later reconciliation would need. Where AWS
 reports resource usage per *session* rather than per invocation, throttle records the
 session and **does not divide its bill** across the invocations that shared it — a
 computed share would be indistinguishable from a measurement.
+
+### OpenAI Responses
+
+The same shape, a different SDK. The params are `responses.ResponseNewParams` and
+throttle sends them unchanged — it does not adjust `MaxOutputTokens`, set `Store`,
+or touch `ServiceTier`. The official client resolves `OPENAI_API_KEY` itself, so
+throttle never holds the credential.
+
+Both packages are called `openai`, so one of them needs an alias:
+
+```go
+import (
+	oai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/responses"
+
+	"github.com/scttfrdmn/throttle/provider/openai"
+)
+```
+
+```go
+client := oai.NewClient() // the official SDK; it reads OPENAI_API_KEY, throttle does not
+
+governed, err := openai.New(openai.Config{
+	Client:  openai.Responses(&client),
+	Counter: openai.Counter(&client), // optional: preflight token counts
+	Engine:  eng,                     // the same engine and catalog as above
+	Catalog: cat,
+})
+
+res, err := governed.Respond(ctx, openai.Request{
+	BudgetID: "agents",
+	Params: responses.ResponseNewParams{ // the SDK's own params, sent verbatim
+		Model: shared.ResponsesModel("gpt-5.1"),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: param.NewOpt("Summarize this in one sentence."),
+		},
+	},
+})
+// res.Response is OpenAI's own *responses.Response.
+// res.Estimate, res.Usage, res.Cost, and res.Charge are the accounting.
+```
+
+Streaming stays a pull loop, because that is what the OpenAI SDK is; Bedrock's
+stays a channel, because that is what its SDK is. throttle does not invent a
+common stream type to make the two look alike — only the accounting is shared:
+
+```go
+governed, err := openai.New(openai.Config{
+	// ...as above, plus:
+	StreamClient: openai.Streaming(&client),
+})
+
+stream, err := governed.RespondStreaming(ctx, openai.StreamRequest{
+	BudgetID: "agents",
+	Params:   params, // as above
+})
+if err != nil {
+	return err
+}
+defer stream.Close()
+
+for stream.Next() { // OpenAI's own event union, one at a time
+	ev := stream.Current()
+	_ = ev
+}
+if err := stream.Close(); err != nil { // idempotent; settles, then reports
+	return err
+}
+// stream.Result() is the accounting, available once the stream is terminal.
+```
+
+OpenAI reports usage only on the terminal `Response`, so the same rule as Bedrock
+applies: a stream that ends without one leaves a request that ran and cannot be
+measured, and its reservation stays encumbered rather than being released. A
+caller who stops reading without closing or cancelling is treated as abandoning
+the stream after `StreamStallTimeout` — a slow provider is not a stalled consumer,
+and that bound only measures the gap between one event being delivered and the next
+being asked for.
+
+Because a request can be served by a different tier than it asked for, and tiers
+price differently, throttle settles on the tier OpenAI *reported* serving. When
+that is not observable the request is recorded as pricing-unresolved rather than
+priced at the standard rate.
 
 ## Architectural rules
 

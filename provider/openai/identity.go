@@ -19,14 +19,24 @@ const AccessProvider = "openai"
 // Publisher is who made the models this adapter reaches.
 const Publisher = "openai"
 
-// OperationResponses is the Responses API call this adapter governs.
+// The Responses API calls this adapter governs.
 //
-// A named operation rather than a bare string, and distinct from any future
-// streaming or Chat Completions operation, because each is a separate billable
-// shape: an operation is what tells a later reader which API a stranded record
-// belongs to, and Chat Completions reports a differently-shaped usage object for
-// what looks like the same work.
-const OperationResponses = "responses"
+// Named operations rather than bare strings, and distinct from each other and from
+// any future Chat Completions operation, because each is a separate billable shape:
+// an operation is what tells a later reader which API a stranded record belongs to,
+// and Chat Completions reports a differently-shaped usage object for what looks
+// like the same work.
+//
+// Streaming is a separate operation for a narrower reason. The two forms consume
+// identical tokens and are priced by identical code, so the distinction is not about
+// money -- it is that a record whose process died mid-request is diagnosed
+// differently depending on whether usage was supposed to arrive in a return value or
+// in a terminal event. The hyphenated form follows the same convention as Bedrock's
+// converse-stream.
+const (
+	OperationResponses       = "responses"
+	OperationResponsesStream = "responses-stream"
+)
 
 // Identify derives an identity from the model string the caller sent.
 //

@@ -100,8 +100,11 @@ func integrationClient(t *testing.T) *openai.Client {
 	c, err := openai.New(openai.Config{
 		Client:  openai.Responses(&client),
 		Counter: openai.Counter(&client),
-		Engine:  eng,
-		Catalog: cat,
+		// Wired here rather than in a second constructor so the streaming test governs
+		// the same budget, the same catalog, and the same ledger as the non-streaming one.
+		StreamClient: openai.Streaming(&client),
+		Engine:       eng,
+		Catalog:      cat,
 	})
 	if err != nil {
 		t.Fatalf("openai.New: %v", err)
@@ -156,6 +159,108 @@ func TestIntegrationRespond(t *testing.T) {
 	// change in OpenAI's tier behaviour would surface here.
 	t.Logf("model requested %q, served %q, tier %q, usage %v, cost %s",
 		res.Identity.ProviderModelID, res.ServedModelID, res.Identity.ServiceTier,
+		res.Usage, res.Charge.ActualCost)
+}
+
+// TestIntegrationRespondStreaming exercises the governed streaming path against real
+// OpenAI, behind the same double gate: the build tag plus -throttle.openai.spend.
+//
+// It exists to confirm the things only the live service can confirm, all of which the
+// streaming accounting model depends on and none of which a fake can establish:
+//
+//   - A real stream really does deliver a terminal Response, and its status is one of
+//     the four the terminality check recognizes. The whole lifecycle hinges on this.
+//   - That terminal Response carries usage. If OpenAI ever stopped including it,
+//     throttle would be correct to leave holds outstanding, but every streaming request
+//     would become unresolvable and this test is where that would show up first.
+//   - The terminal event is the last one, or near it. If usage arrived only after
+//     several more events, settling on the terminal Response would still be right, but
+//     the observation is worth having.
+//   - service_tier comes back populated on a stream, exactly as it does on a single
+//     round trip, since #30's rule prices on the tier that actually served the call.
+//
+// Deliberately not asserted: the number or kind of intermediate events. Those are
+// OpenAI's business, and throttle forwards what it does not understand.
+func TestIntegrationRespondStreaming(t *testing.T) {
+	ctx := context.Background()
+	client := integrationClient(t)
+
+	s, err := client.RespondStreaming(ctx, openai.StreamRequest{
+		BudgetID: "integration",
+		Params: responses.ResponseNewParams{
+			Model: shared.ResponsesModel(*integrationModel),
+			Input: responses.ResponseNewParamsInputUnion{
+				OfString: param.NewOpt("Count from one to five, one number per line."),
+			},
+			MaxOutputTokens: param.NewOpt(int64(64)),
+		},
+		Metadata: map[string]string{"workload": "throttle-integration-stream"},
+	})
+	if err != nil {
+		t.Fatalf("RespondStreaming: %v", err)
+	}
+	defer s.Close()
+
+	// The caller's own read loop, exactly as the docs describe it. Events are counted and
+	// their types noted; nothing is accumulated, because there is nothing throttle would
+	// do with the text.
+	var events, terminals int
+	var lastType string
+	var afterTerminal int
+	for s.Next() {
+		ev := s.Current()
+		events++
+		lastType = ev.Type
+		if ev.JSON.Response.Valid() {
+			switch ev.Response.Status {
+			case responses.ResponseStatusCompleted, responses.ResponseStatusIncomplete,
+				responses.ResponseStatusFailed, responses.ResponseStatusCancelled:
+				terminals++
+			}
+		}
+		if terminals > 0 {
+			afterTerminal++
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if events == 0 {
+		t.Fatal("the live stream delivered no events at all")
+	}
+	if terminals == 0 {
+		t.Fatalf("the live stream delivered %d events but no terminal Response (last type %q): "+
+			"throttle cannot settle a stream that never reports one", events, lastType)
+	}
+	if terminals > 1 {
+		t.Errorf("the live stream carried %d terminal Responses; throttle accounts on the first", terminals)
+	}
+
+	res := s.Result()
+	if res == nil {
+		t.Fatal("the stream reached no terminal state")
+	}
+	if !res.Settled {
+		t.Fatalf("the streamed request did not settle; cost = %s (%s)", res.Cost.Amount, res.Cost.Reason)
+	}
+	if res.Charge.ActualCost <= 0 {
+		t.Errorf("ActualCost = %s, want a positive charge", res.Charge.ActualCost)
+	}
+	if res.Usage.Count(usage.InputTokens) == 0 {
+		t.Error("the terminal Response reported no input tokens")
+	}
+	if res.Usage.Count(usage.OutputTokens) == 0 && res.Usage.Count(usage.ReasoningTokens) == 0 {
+		t.Error("the terminal Response reported no output or reasoning tokens")
+	}
+	if res.Identity.ServiceTier == "" {
+		t.Error("the terminal Response reported no service tier, so #30's pricing rule had nothing to price on")
+	}
+
+	// Logged rather than asserted: how many events trailed the terminal Response is
+	// OpenAI's choice, and this is the record of what it currently does.
+	t.Logf("%d events, %d after the terminal Response (last type %q), served %q, tier %q, usage %v, cost %s",
+		events, afterTerminal-1, lastType, res.ServedModelID, res.Identity.ServiceTier,
 		res.Usage, res.Charge.ActualCost)
 }
 

@@ -133,6 +133,18 @@ type Config struct {
 	// Wrap a real *openai.Client with Responses(c) to satisfy it.
 	Client ResponsesAPI
 
+	// StreamClient enables governed streaming Responses calls. Optional: a caller who
+	// only makes non-streaming calls needs nothing here, and Client.RespondStreaming
+	// reports ErrNoStreamClient without it.
+	//
+	// Separate from Client rather than folded into it because the SDK types the two
+	// calls differently -- NewStreaming has no error return -- and because a governed
+	// stream carries lifecycle obligations, lease renewal and abandonment detection,
+	// that a single round trip does not.
+	//
+	// Wrap a real *openai.Client with Streaming(c) to satisfy it.
+	StreamClient StreamAPI
+
 	// Counter enables preflight input token counting via OpenAI's
 	// POST /responses/input_tokens. Optional: it is an extra round trip per request,
 	// so a caller opts in. Without it, input is estimated from content length.
@@ -159,17 +171,34 @@ type Config struct {
 	// MaxOutputTokens overrides DefaultMaxOutputTokens for estimating requests that
 	// set no cap of their own. It is used for estimation only and never sent.
 	MaxOutputTokens int64
+
+	// StreamStallTimeout bounds how long a governed stream tolerates a caller that
+	// has stopped consuming it before treating the stream as abandoned.
+	//
+	// It exists so a caller who neither reads, closes, nor cancels cannot renew a hold
+	// indefinitely. It is emphatically not a maximum generation time: the bound
+	// measures the gap between a caller receiving one event and asking for the next,
+	// and it does not run while the caller is blocked inside Stream.Next waiting on
+	// OpenAI. A slow provider is not a stalled consumer.
+	//
+	// Zero means the reservation lease, which is generous by construction: a caller
+	// idler than the lease is about to have its hold reclaimed regardless. The same
+	// setting and the same meaning as the Bedrock adapter's, so there is one concept
+	// rather than two.
+	StreamStallTimeout time.Duration
 }
 
 // Client is a governed OpenAI Responses client.
 type Client struct {
-	api      ResponsesAPI
-	counter  InputTokenCounter
-	engine   *engine.Engine
-	catalog  pricing.Catalog
-	rates    pricing.RateSource
-	activity activity.Store
-	maxOut   int64
+	api         ResponsesAPI
+	streamAPI   StreamAPI
+	counter     InputTokenCounter
+	engine      *engine.Engine
+	catalog     pricing.Catalog
+	rates       pricing.RateSource
+	activity    activity.Store
+	maxOut      int64
+	streamStall time.Duration
 }
 
 // New builds a governed client.
@@ -186,17 +215,22 @@ func New(cfg Config) (*Client, error) {
 	if cfg.MaxOutputTokens < 0 {
 		return nil, errors.New("openai: max output tokens cannot be negative")
 	}
+	if cfg.StreamStallTimeout < 0 {
+		return nil, errors.New("openai: stream stall timeout cannot be negative")
+	}
 	maxOut := cfg.MaxOutputTokens
 	if maxOut == 0 {
 		maxOut = DefaultMaxOutputTokens
 	}
 	c := &Client{
-		api:      cfg.Client,
-		counter:  cfg.Counter,
-		engine:   cfg.Engine,
-		catalog:  cfg.Catalog,
-		activity: cfg.Activity,
-		maxOut:   maxOut,
+		api:         cfg.Client,
+		streamAPI:   cfg.StreamClient,
+		counter:     cfg.Counter,
+		engine:      cfg.Engine,
+		catalog:     cfg.Catalog,
+		activity:    cfg.Activity,
+		maxOut:      maxOut,
+		streamStall: cfg.StreamStallTimeout,
 	}
 	// Quote capture is opportunistic: a catalog that cannot hand out its rates still
 	// prices requests, it just cannot freeze them, so settlement falls back to a live
@@ -752,6 +786,12 @@ func (c *Client) estimate(ctx context.Context, in responses.ResponseNewParams, p
 		return usage.Estimate{}, pricing.CapturedQuote{}, errors.New("openai: a request with a model is required")
 	}
 	id := Identify(p.modelID, p.serviceTier)
+	// The operation comes from the params rather than from Identify's default, so a
+	// streaming request is estimated and quoted by this function while still recording
+	// which API it was. Pricing keys on provider and model ID, so the two forms of one
+	// request necessarily quote identically -- which is the point of routing both
+	// through here.
+	id.Operation = p.operation
 
 	maxOut, callerSet := c.maxOutputTokens(p)
 	inTokens, counted, note := c.countInput(ctx, in)

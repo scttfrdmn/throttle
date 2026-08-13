@@ -95,3 +95,35 @@ func TestAdaptersDoDependOnTheirProviderSDK(t *testing.T) {
 		})
 	}
 }
+
+// Streaming is where a parallel representation is most tempting, so each adapter is
+// asserted to use its SDK's own streaming surface rather than a hand-rolled stand-in.
+//
+// A wrapper could have satisfied its own interface with types it defined itself --
+// decoding SSE by hand, or copying the SDK's event shape into a local struct -- and
+// every other test here would still pass. The check is that the streaming package the
+// SDK actually ships is in the adapter's dependency graph, which is only true if the
+// adapter is calling into it.
+func TestAdaptersUseTheirProviderStreamingSDK(t *testing.T) {
+	streaming := map[string]string{
+		// The SSE decoder behind ResponseService.NewStreaming. throttle's EventStream is
+		// declared over the SDK's own event union and asserted to be satisfied by
+		// *ssestream.Stream at compile time, which is what puts this package here.
+		"github.com/scttfrdmn/throttle/provider/openai": "openai-go/v3/packages/ssestream",
+		// Bedrock's ConverseStream event stream, for the same reason.
+		"github.com/scttfrdmn/throttle/provider/bedrock": "aws-sdk-go-v2/service/bedrockruntime",
+	}
+
+	for pkg, dep := range streaming {
+		t.Run(pkg, func(t *testing.T) {
+			out, err := exec.Command("go", "list", "-deps", pkg).Output()
+			if err != nil {
+				t.Skipf("go list unavailable: %v", err)
+			}
+			if !strings.Contains(string(out), dep) {
+				t.Errorf("%s does not depend on %s: a streaming adapter must use the provider's "+
+					"own streaming surface, not a parallel representation of it", pkg, dep)
+			}
+		})
+	}
+}

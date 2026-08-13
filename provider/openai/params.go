@@ -9,12 +9,12 @@ import (
 // determining identity, the input token count, the output ceiling, and whether the
 // request's tools put part of its charge out of reach.
 //
-// It exists for the same reason Bedrock's does. A streaming Responses request will
-// have to be identified, estimated, and quoted by exactly this code -- the streaming
-// and non-streaming forms of one request consume the same tokens -- and two code
-// paths that price the same request are the one inconsistency this package cannot
-// tolerate. Streaming is not implemented in this slice; this is the seam it will
-// attach to.
+// It exists for the same reason Bedrock's does, and streaming is what it was built
+// for: a streaming Responses request is identified, estimated, and quoted by exactly
+// this code, because the streaming and non-streaming forms of one request consume the
+// same tokens. Two code paths that price the same request are the one inconsistency
+// this package cannot tolerate. See streamParams, which differs from responseParams
+// in the operation and in nothing else.
 //
 // It holds references to the caller's slices rather than copies. Nothing here
 // mutates them, and copying prompt content to measure its length would be pointless
@@ -67,6 +67,20 @@ func responseParams(in responses.ResponseNewParams) params {
 		limit := n.Value
 		p.maxOutputTokens = &limit
 	}
+	return p
+}
+
+// streamParams reads the same fields out of the same request type for a streaming
+// call.
+//
+// The SDK uses one params type for both forms -- NewStreaming takes the identical
+// ResponseNewParams and sets `stream: true` itself -- so there is genuinely nothing
+// to read differently. The operation is the whole difference, and it is set here
+// rather than by the caller so that no path can create a streaming request that
+// records itself as a non-streaming one.
+func streamParams(in responses.ResponseNewParams) params {
+	p := responseParams(in)
+	p.operation = OperationResponsesStream
 	return p
 }
 

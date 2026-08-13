@@ -7,6 +7,7 @@ import (
 
 	oai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
 
 	"github.com/scttfrdmn/throttle/activity"
@@ -149,7 +150,19 @@ func responseReason(r *responses.Response) string {
 // status, and the type, code, and parameter OpenAI classified it as. All three are
 // fixed vocabularies. Any other error -- a transport failure, a DNS error -- is
 // carrying no provider payload and is recorded as-is.
+//
+// A streaming error gets the same treatment for a stronger reason: the SDK's
+// StreamError carries the raw SSE frame in both of its fields -- its Message
+// interpolates the raw error JSON, and its Event.Data is the frame verbatim -- so
+// neither can be persisted. Nothing structured survives that reduction, because the
+// SDK does not parse the frame into fields; saying so plainly is better than
+// recording a payload that may quote the prompt.
 func redactProviderError(err error) string {
+	var streamErr *ssestream.StreamError
+	if errors.As(err, &streamErr) {
+		return "the provider's event stream reported an error (the provider's message is not recorded: it carries the raw stream payload)"
+	}
+
 	var apiErr *oai.Error
 	if !errors.As(err, &apiErr) {
 		return err.Error()

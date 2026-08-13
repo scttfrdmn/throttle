@@ -161,36 +161,78 @@ production.
 
 ### Streaming responses
 
-A streaming call is the same lifecycle with one fact changed: usage arrives only in
-a terminal metadata event, so the adapter has to observe the *end* of the response to
-account for the request at all.
+A streaming call is the same lifecycle with one fact changed: usage arrives only in an
+authoritative terminal event, so the adapter has to observe the *end* of the response
+to account for the request at all.
 
-throttle therefore proxies the event path. It reads the provider's stream and
-forwards each event to the caller over an unbuffered channel, so delivery stays
-incremental and a slow caller gets ordinary backpressure. Nothing is accumulated,
-replayed, or inspected beyond the metadata event, and no content is persisted. There
-is deliberately no accessor for the raw stream: an unobserved read path is an
-unaccounted request.
+Everything that decides money is shared across providers, and it is the following
+list, not a shared implementation:
 
-Exactly one goroutine owns the response — reading, closing the provider's stream,
-renewing the lease, and performing the terminal accounting under a `sync.Once`. Every
-way a stream can end (drained, provider error, caller `Close`, context cancellation,
-an abandoned reader) funnels into that owner, so a stream reaches exactly one
-terminal state regardless of how many of those happen at once.
+- The admission path. Identical to the non-streaming one: normalize the request
+  identity, estimate exposure, capture the immutable quote, reserve the whole budget
+  chain atomically, persist the pending activity record — then create the stream.
+- Only authoritative provider usage settles a request. Streamed content is never
+  counted, tokenized, summed, or reconstructed. Nothing is accumulated for accounting.
+- The terminal state is defined by what the provider authoritatively reported, not by
+  what the transport did. A content-lifecycle event that sounds final is not an
+  accounting boundary.
+- Terminal accounting happens exactly once per stream, under a `sync.Once`, and
+  synchronously *before* the terminal event is handed to the caller. A caller who sees
+  completion and stops iterating cannot leave a request unaccounted.
+- A hold is never released because this side of the connection went quiet. See the
+  asymmetry below.
+- The hold is renewed while the request is in flight, and every terminal path stops
+  the renewal.
+- No content is persisted, and no stream event is persisted.
 
-The accounting consequence is asymmetric on purpose. A stream whose metadata event
-was observed settles from the captured quote, exactly as a non-streaming response
-does, even if the stream then failed — reported usage is authoritative. A stream that
-ended before that event keeps its reservation encumbered and records the outcome as
-unknown. Releasing would assert that nothing was spent, and a caller who closed,
-cancelled, or walked away has demonstrated something about the caller, not about the
-model. Only a call that failed before any stream existed releases its hold.
+The *mechanics* are the provider's, and they differ. Provider-neutral semantics do not
+require identical implementations, and forcing one would mean modelling every SDK as
+whichever one was written first.
+
+- **Bedrock's SDK pushes**: `ConverseStream` delivers events onto a channel, so
+  throttle's Bedrock stream owns a goroutine that reads them and forwards each one to
+  the caller over an unbuffered channel, keeping delivery incremental with ordinary
+  backpressure. Exactly one goroutine owns the response — reading, closing, renewing,
+  and accounting — and every way the stream can end funnels into that owner.
+- **OpenAI's SDK pulls**: `Responses.NewStreaming` returns an iterator with
+  `Next`/`Current`/`Err`/`Close`. throttle's OpenAI stream presents those same four
+  methods and the SDK's own event type, so the caller's read loop is unchanged and the
+  caller's own goroutine drives the provider's stream while throttle observes the
+  events passing through. Wrapping a pull iterator in a channel would add a goroutine,
+  a copy, and a second stall-detection problem to solve nothing.
+
+There is deliberately no accessor for a raw, unobserved stream in either shape: an
+unobserved read path is an unaccounted request.
+
+The accounting consequence is asymmetric on purpose. A stream whose authoritative
+terminal usage was observed settles from the captured quote, exactly as a
+non-streaming response does, even if the stream then failed — reported usage is
+authoritative, and a trailing transport error does not undo it. A stream that ended
+before that point keeps its reservation encumbered and records the outcome as unknown.
+Releasing would assert that nothing was spent, and a caller who closed, cancelled, or
+walked away has demonstrated something about the caller, not about the model. This
+includes a clean end of stream: an SDK reports "the transport stopped producing
+events" and "the generation finished" identically, so an EOF without a terminal event
+is an unknown outcome rather than a success. Only a call that failed before any stream
+existed releases its hold.
 
 Because a stream can outlive a reservation lease, the hold is renewed on a timer at a
 fraction of the lease quantum while the stream is alive, and the renewal stops at the
-terminal state. A renewal failure does not tear the stream down: an expired
+terminal state. Renewal is tied to the request being in flight, not to content having
+arrived recently. A renewal failure does not tear the stream down: an expired
 reservation can still settle, so killing the stream would forfeit the usage still to
 come and recover nothing.
+
+A renewed lease behind a caller who has walked away would be an immortal reservation,
+so each shape bounds consumer idleness — one setting, `StreamStallTimeout`, with one
+meaning in both. It is not a maximum generation time. A push-shaped stream bounds the
+forwarding step directly. A pull-shaped stream has no such step to bound, because
+between two `Next` calls throttle is not running at all; instead a supervisor samples
+whether the caller is currently blocked inside `Next` and whether it has entered
+`Next` since the last sample. A caller waiting on the provider is the request working
+and re-arms the bound however long generation takes; only a caller who is outside
+`Next` and has not returned to it is abandoning the stream. A caller who takes the
+stream and never reads it at all is covered by the same timer.
 
 ### Managed agent invocations are compound transactions
 
