@@ -408,13 +408,15 @@ func displayModel(id usage.ModelIdentity) (string, bool) {
 // would tell a reader the figure needs no per-token rate, which is precisely the rate
 // whose absence made the cost a floor.
 var tokenDimensions = map[usage.Dimension]bool{
-	usage.InputTokens:       true,
-	usage.OutputTokens:      true,
-	usage.ReasoningTokens:   true,
-	usage.CacheReadTokens:   true,
-	usage.CacheWriteTokens:  true,
-	usage.InputAudioTokens:  true,
-	usage.OutputAudioTokens: true,
+	usage.InputTokens:        true,
+	usage.OutputTokens:       true,
+	usage.ReasoningTokens:    true,
+	usage.CacheReadTokens:    true,
+	usage.CacheWriteTokens:   true,
+	usage.CacheWrite5mTokens: true,
+	usage.CacheWrite1hTokens: true,
+	usage.InputAudioTokens:   true,
+	usage.OutputAudioTokens:  true,
 }
 
 // usageItems flattens usage into a stable ordered list.
@@ -435,10 +437,14 @@ func usageItems(u usage.Usage, unpriced []usage.Dimension) []UsageItem {
 	// Audio sits beside the text figure in its own direction, because the two are the
 	// disjoint halves of one reported total and a reader checking the arithmetic should
 	// not have to scan past the cache rows to find the other half.
+	// The cache rows sit together and the TTL-specific writes sit beside the undifferentiated
+	// one, because a provider that prices a one-hour write higher than a five-minute write
+	// makes the two adjacent figures the thing a reader is comparing.
 	preferred := []usage.Dimension{
 		usage.InputTokens, usage.InputAudioTokens,
 		usage.OutputTokens, usage.OutputAudioTokens,
 		usage.ReasoningTokens, usage.CacheReadTokens, usage.CacheWriteTokens,
+		usage.CacheWrite5mTokens, usage.CacheWrite1hTokens,
 	}
 	seen := map[usage.Dimension]bool{}
 	var out []UsageItem

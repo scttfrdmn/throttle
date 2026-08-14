@@ -571,18 +571,22 @@ func (e *Engine) Begin(ctx context.Context, req Request) (*Transaction, Decision
 		return nil, Decision{}, errors.New("engine: request id or reservation id is required")
 	}
 
-	// An unpriced estimate has nothing to reserve, and what to do about that
-	// depends on posture -- so the chain is evaluated first, with a zero estimate,
-	// purely to learn the effective mode. Enforce cannot honestly govern spend it
-	// cannot measure and denies; monitor admits and records the cost as unpriced.
-	// Neither ever substitutes a guess or a zero amount.
+	// An estimate whose cost is not fully known cannot be governed as a dollar
+	// figure, and what to do about that depends on posture: enforce cannot honestly
+	// govern spend it cannot measure and denies; monitor admits and records the cost
+	// as unpriced. Neither ever substitutes a guess.
+	//
+	// What is held, though, is the amount that *is* knowable. A partial estimate is a
+	// floor -- some dimensions priced, others with no captured rate -- and holding
+	// zero against it would offer the priced part of the request's exposure to the
+	// next caller as though it were free. So the hold is Cost.AtLeast(): the full
+	// amount when known, the floor when partial, and zero only where genuinely no
+	// amount is knowable. It is still not a bound, which is why enforce refuses
+	// rather than admitting against it.
 	priced := req.Estimate.Cost.Known()
-	estimate := money.Money(0)
-	if priced {
-		estimate = req.Estimate.Cost.Amount
-		if estimate < 0 {
-			return nil, Decision{}, errors.New("engine: estimated cost cannot be negative")
-		}
+	estimate := req.Estimate.Cost.AtLeast()
+	if estimate < 0 {
+		return nil, Decision{}, errors.New("engine: estimated cost cannot be negative")
 	}
 
 	now := e.clock()
@@ -606,9 +610,10 @@ func (e *Engine) Begin(ctx context.Context, req Request) (*Transaction, Decision
 			}
 			return nil, dec, fmt.Errorf("%w: %s", ErrCostUnknown, reason)
 		}
-		// Monitor mode admits it. The hold is zero because there is no amount to
-		// hold, not because the request is free -- the activity record carries the
-		// unpriced cost so the gap is visible rather than implied.
+		// Monitor mode admits it. The hold is whatever was mathematically knowable,
+		// which for a wholly unpriced estimate is zero -- because there was no amount
+		// to hold, not because the request is free. The activity record carries the
+		// unpriced cost either way, so the gap is visible rather than implied.
 		dec.CostUnknown = true
 	}
 

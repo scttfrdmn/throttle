@@ -24,8 +24,20 @@ func TestShowRevealsNoSecrets(t *testing.T) {
 		"AWS_SESSION_TOKEN":     "FwoGZXIvYXdzEBYaDEXAMPLETOKEN",
 		"AWS_PROFILE":           "research-admin",
 		"AWS_REGION":            "us-west-2",
-		"ANTHROPIC_API_KEY":     "sk-ant-api03-EXAMPLE",
 		"OPENAI_API_KEY":        "sk-proj-EXAMPLE",
+
+		// Every secret the current Anthropic SDK resolves from the environment. throttle
+		// stores none of them and reads none of them: the SDK owns its own credential chain,
+		// and the only way to keep it that way is for this surface to know no key names.
+		"ANTHROPIC_API_KEY":             "sk-ant-api03-EXAMPLE",
+		"ANTHROPIC_AUTH_TOKEN":          "Bearer EXAMPLE-AUTH-TOKEN",
+		"ANTHROPIC_PROFILE":             "research-anthropic",
+		"ANTHROPIC_FEDERATION_RULE_ID":  "fedrule_EXAMPLE",
+		"ANTHROPIC_ORGANIZATION_ID":     "org_EXAMPLE",
+		"ANTHROPIC_IDENTITY_TOKEN":      "eyJhbGciOiJSUzI1NiEXAMPLE",
+		"ANTHROPIC_IDENTITY_TOKEN_FILE": "/var/run/secrets/anthropic/token",
+		"ANTHROPIC_WEBHOOK_SIGNING_KEY": "whsec_EXAMPLE",
+		"ANTHROPIC_CUSTOM_HEADERS":      "X-Internal-Auth: EXAMPLE",
 	}
 	for k, v := range secrets {
 		t.Setenv(k, v)
@@ -69,9 +81,24 @@ budgets:
 		t.Error("output does not say that values are withheld")
 	}
 	// A key whose name throttle does not enumerate must not appear at all, not even as a
-	// name: an environment dump is how the next credential gets printed.
-	if strings.Contains(out, "ANTHROPIC_API_KEY") || strings.Contains(out, "OPENAI_API_KEY") {
-		t.Error("output enumerates provider API key variables")
+	// name: an environment dump is how the next credential gets printed. That rule is what
+	// makes the growing Anthropic list below cost nothing to keep correct -- throttle does
+	// not know these names, so it cannot print them, and a new one added by the SDK
+	// tomorrow is covered by the same silence.
+	for _, name := range []string{
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE",
+		"ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
+		"ANTHROPIC_IDENTITY_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE",
+		"ANTHROPIC_WEBHOOK_SIGNING_KEY", "ANTHROPIC_CUSTOM_HEADERS",
+	} {
+		if strings.Contains(out, name) {
+			t.Errorf("output enumerates %s, which throttle neither stores nor reads", name)
+		}
+	}
+	// "ANTHROPIC" at all would mean the surface grew provider credential awareness.
+	if strings.Contains(out, "ANTHROPIC") {
+		t.Error("output mentions an ANTHROPIC environment variable: the SDK owns that chain")
 	}
 	if strings.Contains(out, "AWS_SECRET_ACCESS_KEY") || strings.Contains(out, "AWS_SESSION_TOKEN") {
 		t.Error("output names credential variables")

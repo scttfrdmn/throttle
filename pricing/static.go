@@ -117,6 +117,9 @@ func specificity(p Price) int {
 	if p.ServiceTier != "" {
 		n++
 	}
+	if p.InferenceGeo != "" {
+		n++
+	}
 	return n
 }
 
@@ -127,6 +130,9 @@ func matches(p Price, id usage.ModelIdentity) bool {
 		return false
 	}
 	if p.ServiceTier != "" && p.ServiceTier != id.ServiceTier {
+		return false
+	}
+	if p.InferenceGeo != "" && p.InferenceGeo != id.InferenceGeo {
 		return false
 	}
 	return true
@@ -159,15 +165,16 @@ func (s *Static) find(id usage.ModelIdentity, at time.Time) *Price {
 // Capture implements RateSource: it freezes the applicable rates so settlement
 // can replay them after the catalog has moved on.
 //
-// It also captures the model's other service tiers as alternates, in the same
-// read, so that a provider serving the request on a tier the caller did not ask
-// for is still priced from frozen rates rather than from a re-query.
+// It also captures the model's other priced access-dimension combinations -- other
+// service tiers, other inference geographies -- as alternates, in the same read, so
+// that a provider serving the request under a combination the caller did not ask for
+// is still priced from frozen rates rather than from a re-query.
 func (s *Static) Capture(id usage.ModelIdentity, at time.Time) (CapturedQuote, error) {
 	q, err := s.capture(id, at)
 	if err != nil {
 		return CapturedQuote{}, err
 	}
-	if alts := s.tiers(id, at, q.ServiceTier); len(alts) > 0 {
+	if alts := s.alternates(id, at, q.selector()); len(alts) > 0 {
 		q.Alternates = alts
 	}
 	return q, nil
@@ -198,23 +205,27 @@ func (s *Static) capture(id usage.ModelIdentity, at time.Time) (CapturedQuote, e
 		// indistinguishable from a real tier-specific capture at settlement. See
 		// CapturedQuote.ServiceTier and issue #30.
 		ServiceTier: price.ServiceTier,
-		Rates:       rates,
-		Provenance:  price.Provenance,
-		CapturedAt:  at,
+		// The row's geography, for the same reason and on the same terms as the tier.
+		InferenceGeo: price.InferenceGeo,
+		Rates:        rates,
+		Provenance:   price.Provenance,
+		CapturedAt:   at,
 	}, nil
 }
 
-// tiers captures a quote per other service tier this model is priced for, so a
-// substituted tier can be priced without going back to a catalog that may have
-// changed in the meantime.
-func (s *Static) tiers(id usage.ModelIdentity, at time.Time, exclude string) map[string]CapturedQuote {
+// alternates captures a quote per other access-dimension combination this model is
+// priced for, so a substituted tier or geography can be priced without going back to
+// a catalog that may have changed in the meantime.
+func (s *Static) alternates(id usage.ModelIdentity, at time.Time, exclude selector) map[string]CapturedQuote {
 	s.mu.RLock()
 	candidates := s.prices[key(id.AccessProvider, id.ProviderModelID)]
-	named := make([]string, 0, len(candidates))
+	named := make([]selector, 0, len(candidates))
 	for _, p := range candidates {
-		if p.ServiceTier != "" && p.ServiceTier != exclude {
-			named = append(named, p.ServiceTier)
+		sel := selectorOfPrice(p)
+		if sel.zero() || sel == exclude {
+			continue
 		}
+		named = append(named, sel)
 	}
 	s.mu.RUnlock()
 
@@ -222,26 +233,27 @@ func (s *Static) tiers(id usage.ModelIdentity, at time.Time, exclude string) map
 		return nil
 	}
 	out := make(map[string]CapturedQuote, len(named))
-	for _, tier := range named {
-		if _, seen := out[tier]; seen {
+	for _, sel := range named {
+		if _, seen := out[sel.key()]; seen {
 			continue
 		}
 		alt := id
-		alt.ServiceTier = tier
-		// Resolved through find, so tier-specific and general entries are ranked by
-		// the same specificity rules that chose the primary.
+		alt.ServiceTier = sel.serviceTier
+		alt.InferenceGeo = sel.inferenceGeo
+		// Resolved through find, so specific and general entries are ranked by the same
+		// specificity rules that chose the primary.
 		q, err := s.capture(alt, at)
 		if err != nil {
 			continue
 		}
-		// find may have fallen through to a row that is not tier-specific -- if the
-		// tier's own row is not yet in effect, say. Keying that under this tier would
-		// file general rates as though the tier had been priced, which is exactly the
-		// mislabelling the primary capture no longer does.
-		if q.ServiceTier != tier {
+		// find may have fallen through to a row that is less qualified -- if this
+		// combination's own row is not yet in effect, say. Keying that under this
+		// combination would file general rates as though it had been priced, which is
+		// exactly the mislabelling the primary capture no longer does.
+		if q.selector() != sel {
 			continue
 		}
-		out[tier] = q
+		out[sel.key()] = q
 	}
 	if len(out) == 0 {
 		return nil

@@ -72,10 +72,10 @@ func (s QuoteSet) Models() []string {
 // For returns the captured quote for an identity, or an error saying why the set
 // cannot price it.
 //
-// The lookup is on the exact provider model ID, and the service tier selects among
-// that quote's alternates — the same rules a single captured quote follows, so a
-// compound charge and a simple one price identically. That includes the refusal:
-// a tier no rate was frozen for is unpriceable here too, and for the same reason.
+// The lookup is on the exact provider model ID, and the access dimensions select
+// among that quote's alternates — the same rules a single captured quote follows, so a
+// compound charge and a simple one price identically. That includes the refusal: a
+// combination no rate was frozen for is unpriceable here too, and for the same reason.
 //
 // It never consults a catalog. A model absent from the set has no price as far as
 // this request is concerned, whatever the catalog may say now.
@@ -164,16 +164,16 @@ func (s QuoteSet) PriceComponents(steps []Component) (usage.Cost, []Component, e
 			unpricedSteps++
 			step.Priced = false
 			// The lookup's own reason, not a generic one: a step whose model was never
-			// priced and a step served on an uncaptured tier need different fixes, and
-			// flattening them to "no captured price" would hide which one happened.
+			// priced and a step served under uncaptured access dimensions need different
+			// fixes, and flattening them to "no captured price" would hide which happened.
 			step.Reason = stepReason(step.Identity, lookupErr)
 			addMissing(step.Usage.Dimensions())
 			reasons = append(reasons, step.Reason)
 			// A model absent from the set resolves to the usual ErrNoPrice/ErrNoRate
-			// below, which is what every caller already tests for. An uncaptured tier is
-			// promoted, because the two need different fixes and the distinction is worth
-			// nothing if it only survives in prose.
-			if firstErr == nil && errors.Is(lookupErr, ErrTierNotCaptured) {
+			// below, which is what every caller already tests for. An uncaptured
+			// combination is promoted, because the two need different fixes and the
+			// distinction is worth nothing if it only survives in prose.
+			if firstErr == nil && errors.Is(lookupErr, ErrRatesNotCaptured) {
 				firstErr = lookupErr
 			}
 			continue
@@ -256,13 +256,13 @@ func (s QuoteSet) PriceComponents(steps []Component) (usage.Cost, []Component, e
 
 // stepReason explains an unpriceable step in the terms the operator needs.
 //
-// A model that was never priced and a model served on a tier no rate was frozen for
-// are different problems with different fixes, so the tier error's own wording is
-// preserved rather than flattened into "no captured price".
+// A model that was never priced and a model served under access dimensions no rate was
+// frozen for are different problems with different fixes, so that error's own wording
+// is preserved rather than flattened into "no captured price".
 func stepReason(id usage.ModelIdentity, err error) string {
-	var tier *TierNotCapturedError
-	if errors.As(err, &tier) {
-		return tier.Error()
+	var uncaptured *RateNotCapturedError
+	if errors.As(err, &uncaptured) {
+		return uncaptured.Error()
 	}
 	return unpricedStepReason(id)
 }

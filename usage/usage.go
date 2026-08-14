@@ -41,6 +41,25 @@ const (
 	CacheReadTokens  Dimension = "cache_read_tokens"
 	CacheWriteTokens Dimension = "cache_write_tokens"
 
+	// CacheWrite5mTokens and CacheWrite1hTokens are cache writes whose lifetime the
+	// provider prices differently: a five-minute entry and a one-hour entry are
+	// written by the same request and billed at different multiples of the input
+	// rate.
+	//
+	// They are separate dimensions from CacheWriteTokens for the reason every
+	// dimension here is separate: the price differs. A provider that distinguishes
+	// them authoritatively and an adapter that folded them together would charge one
+	// lifetime's rate for the other's tokens, and a request mixing the two would be
+	// wrong in a direction nobody could recover from the record.
+	//
+	// A provider that reports cache writes without distinguishing their lifetime
+	// keeps using CacheWriteTokens. These are for the case where the response itself
+	// decomposes the total, and an adapter must never guess which one applies from
+	// the request's cache_control syntax: what was requested and what was written
+	// are different facts.
+	CacheWrite5mTokens Dimension = "cache_write_5m_tokens"
+	CacheWrite1hTokens Dimension = "cache_write_1h_tokens"
+
 	// InputAudioTokens and OutputAudioTokens are audio carried through a
 	// token-billed multimodal model: the provider reports a token count, not a
 	// duration, and prices it per token like text -- but at its own rate, which is
@@ -259,7 +278,10 @@ func Merge(a, b Usage) Usage {
 // cannot be costed.
 func (u Usage) TotalTokens() int64 {
 	var n int64
-	for _, d := range []Dimension{InputTokens, OutputTokens, ReasoningTokens, CacheReadTokens, CacheWriteTokens} {
+	for _, d := range []Dimension{
+		InputTokens, OutputTokens, ReasoningTokens,
+		CacheReadTokens, CacheWriteTokens, CacheWrite5mTokens, CacheWrite1hTokens,
+	} {
 		n += u.dims[d]
 	}
 	return n

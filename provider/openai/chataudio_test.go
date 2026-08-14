@@ -206,8 +206,12 @@ func TestAudioWithoutRatesIsDeniedBeforeExecutionUnderEnforce(t *testing.T) {
 }
 
 // Monitor admits the same request, under the same unknown-cost semantics every other
-// unpriceable request uses, with a zero hold -- because there is no amount to hold, not
-// because the request is free.
+// unpriceable request uses -- holding the part of it that is arithmetic.
+//
+// The hold is the text floor rather than zero, and that is the shared engine's rule
+// rather than an audio one: an estimate downgraded to a floor still names an amount that
+// will be spent, and offering it to the next caller would be releasing spend that has not
+// happened yet. Zero is reserved for a request where nothing at all is knowable.
 func TestAudioWithoutRatesIsAdmittedUnderMonitor(t *testing.T) {
 	h := newMonitorChatHarness(t)
 	h.chat.out = audioCompletion(t, gpt51)
@@ -227,6 +231,12 @@ func TestAudioWithoutRatesIsAdmittedUnderMonitor(t *testing.T) {
 	}
 	if got := h.totals(t).Spent; got != 0 {
 		t.Errorf("Spent = %s, want 0: an incompletely priced request must not settle", got)
+	}
+	// The hold is the knowable floor and it stays encumbered, because money was spent
+	// that throttle cannot fully name.
+	if got := h.totals(t).Reserved; got == 0 {
+		t.Error("Reserved = 0: the text portion of this request is priced arithmetic, and holding " +
+			"nothing against it offers already-committed headroom to the next caller")
 	}
 
 	rec := h.record(t, "audio-monitor")

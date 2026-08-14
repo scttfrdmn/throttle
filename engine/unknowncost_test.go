@@ -16,6 +16,103 @@ func unpriced(reason string) usage.Estimate {
 	return usage.Estimate{Cost: usage.UnknownCost(reason)}
 }
 
+// partial is an estimate whose tokens priced and whose remaining exposure did not: a
+// hosted tool billed outside the usage object, a usage counter with no captured rate.
+// The amount is a real floor, which is why it is not the same case as unpriced.
+func partial(floor money.Money, reason string) usage.Estimate {
+	return usage.Estimate{
+		Cost: usage.PartialCost(floor, []usage.Dimension{usage.Dimension("container-hours")}, reason),
+	}
+}
+
+// A partial estimate holds its floor. The priced part of the request's exposure is
+// money that will be spent, so offering it to the next caller as though the request
+// were free is the same error as releasing an unresolved liability -- just made
+// earlier, at admission.
+//
+// This is the shared-layer rule every provider adapter depends on: a server-side tool
+// billed in a unit no response reports downgrades the estimate to a floor, and the
+// floor is the honest hold. Zero belongs only where no amount is knowable at all.
+func TestMonitorHoldsTheKnowableFloorOfAPartialEstimate(t *testing.T) {
+	eng, _ := newEngine(t, ModeMonitor, start)
+	ctx := context.Background()
+
+	tx, dec, err := eng.Begin(ctx, Request{
+		BudgetID:  "research",
+		RequestID: "req-1",
+		Estimate:  partial(dollars(40), "container time is not reported in the response"),
+	})
+	if err != nil {
+		t.Fatalf("monitor mode must admit a partially priced request: %v", err)
+	}
+	if !dec.CostUnknown {
+		t.Error("Decision.CostUnknown must be set: a floor is not a governable price")
+	}
+	if got := tx.Reservation().Amount; got != dollars(40) {
+		t.Errorf("reserved %s, want the knowable floor of %s: holding zero against a floor "+
+			"hands the priced part of this request's exposure to the next caller", got, dollars(40))
+	}
+
+	// And the hold is real, so a concurrent request sees it.
+	st, err := eng.Status(ctx, "research")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Snapshot.Reserved != dollars(40) {
+		t.Errorf("Reserved = %s, want %s visible to every other caller", st.Snapshot.Reserved, dollars(40))
+	}
+}
+
+// A wholly unpriced estimate still holds nothing, because nothing is knowable. The
+// two cases must not converge: the floor is held because it is arithmetic, not because
+// an unpriced request deserves a guess.
+func TestMonitorHoldsNothingWhenNoAmountIsKnowable(t *testing.T) {
+	eng, _ := newEngine(t, ModeMonitor, start)
+
+	tx, _, err := eng.Begin(context.Background(), Request{
+		BudgetID: "research", RequestID: "req-1", Estimate: unpriced("no price for this model"),
+	})
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if got := tx.Reservation().Amount; got != 0 {
+		t.Errorf("reserved %s for an estimate with no knowable amount, want 0: the engine must "+
+			"not substitute a figure it does not have", got)
+	}
+}
+
+// Enforce still refuses a partial estimate. A floor bounds nothing above, so admitting
+// against it would be governing a ceiling throttle cannot state -- and the refusal has
+// to happen before the provider is called, which is the only point at which it is free.
+func TestEnforceDeniesAPartialEstimateDespiteItsFloor(t *testing.T) {
+	eng, _, _ := newEngineWith(t, ModeEnforce, start, unpaced("rich", "", dollars(1_000_000)))
+
+	tx, dec, err := eng.Begin(context.Background(), Request{
+		BudgetID:  "rich",
+		RequestID: "req-1",
+		Estimate:  partial(dollars(40), "container time is not reported in the response"),
+	})
+	if !errors.Is(err, ErrCostUnknown) {
+		t.Fatalf("error = %v, want ErrCostUnknown: a floor is not an upper bound, however "+
+			"much headroom there is", err)
+	}
+	if tx != nil {
+		t.Error("a denied request must not hold a reservation")
+	}
+	if dec.Admitted {
+		t.Error("Decision.Admitted must be false")
+	}
+	// Nothing was held, so the floor did not quietly encumber a budget for a request
+	// that never ran.
+	st, err := eng.Status(context.Background(), "rich")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Snapshot.Reserved != 0 {
+		t.Errorf("Reserved = %s, want 0 for a request that was refused", st.Snapshot.Reserved)
+	}
+}
+
 // Enforce mode cannot honestly govern a dollar budget it cannot measure against,
 // so an unpriced request is refused -- and refused before the provider is called,
 // which is the only point at which refusing costs nothing.

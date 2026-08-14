@@ -79,8 +79,9 @@ func TestCoreDoesNotDependOnProviderSDKs(t *testing.T) {
 // adapters.
 func TestAdaptersDoDependOnTheirProviderSDK(t *testing.T) {
 	adapters := map[string]string{
-		"github.com/scttfrdmn/throttle/provider/bedrock": "aws-sdk-go",
-		"github.com/scttfrdmn/throttle/provider/openai":  "openai-go",
+		"github.com/scttfrdmn/throttle/provider/bedrock":   "aws-sdk-go",
+		"github.com/scttfrdmn/throttle/provider/openai":    "openai-go",
+		"github.com/scttfrdmn/throttle/provider/anthropic": "anthropic-sdk-go",
 	}
 
 	for pkg, sdk := range adapters {

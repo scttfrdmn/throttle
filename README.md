@@ -51,10 +51,11 @@ period, optionally capped, so a slow month funds a busy one.
 
 ## What works today
 
-Governed calls work end to end against two providers: AWS Bedrock — `Converse`,
-`ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime` — and
+Governed calls work end to end against three providers: AWS Bedrock — `Converse`,
+`ConverseStream`, Agents Classic `InvokeAgent`, and AgentCore `InvokeAgentRuntime`;
 OpenAI, both its Responses API (streaming and non-streaming) and its older Chat
-Completions API (non-streaming). Around them:
+Completions API (non-streaming); and Anthropic directly, via its Messages API
+(non-streaming). Around them:
 
 - **Budgets** with arbitrary envelopes — `monthly` is shorthand for the same period rule a
   two-year grant uses — plus linear pacing, banking, time-based borrowing, rollover with an
@@ -71,8 +72,8 @@ Completions API (non-streaming). Around them:
 - **A local SQLite ledger and activity store.** No server, no account, no network calls of
   throttle's own.
 
-Not yet: streaming Chat Completions, Anthropic direct, and Gemini. Those adapters do
-not exist — nothing here supports them today. Pricing ships as a versioned fixture catalog
+Not yet: streaming Anthropic Messages, the Anthropic Batch API, streaming Chat Completions,
+and Gemini. Nothing here supports them today. Pricing ships as a versioned fixture catalog
 rather than a live price-list sync, and the worker that ingests delayed AgentCore
 runtime-resource usage is not written, though the data model and join keys for it are.
 
@@ -247,11 +248,15 @@ scanned 18 / repaired 3 / consistent 10 / unresolved 3 / awaiting data 2
 
 ## Governing a call
 
-There are two direct adapters today, **AWS Bedrock** and **OpenAI**. Each is a
-shim around that provider's own client rather than a replacement for it: the request and
+There are three direct adapters today, **AWS Bedrock**, **OpenAI**, and **Anthropic**. Each
+is a shim around that provider's own client rather than a replacement for it: the request and
 the response stay the SDK's own types, and there is deliberately no generic
 `throttle.Generate` in front of them. What they share is the accounting — one budget
 engine, one ledger, one set of money semantics — not an invented common API.
+
+Claude reached directly and Claude reached through Bedrock are **two different access
+providers** sharing one publisher. They are never collapsed into one, because "how much of my
+Claude spend goes through Bedrock?" is a question only separate access paths can answer.
 
 ### AWS Bedrock
 
@@ -566,6 +571,81 @@ input and output are separate token dimensions billed at their own rates, so whe
 catalog has no audio rates for the model, the request is refused before the call under
 enforcement, and under monitoring it settles as the text cost plus the two unpriced audio
 dimensions by name — a floor, never a total, and never zero.
+
+### Anthropic Messages
+
+Claude directly rather than through Bedrock. The params are `anthropic.MessageNewParams` and
+throttle sends them unchanged — it does not touch `MaxTokens`, rewrite a model alias, or
+enable caching on your behalf. The official client resolves its own credential chain, so
+throttle never holds the credential and has no config field for one.
+
+Both packages are called `anthropic`, so one of them needs an alias:
+
+```go
+import (
+	anth "github.com/anthropics/anthropic-sdk-go"
+
+	"github.com/scttfrdmn/throttle/provider/anthropic"
+)
+```
+
+```go
+client := anth.NewClient() // the official SDK; it resolves its own credentials, throttle does not
+
+governed, err := anthropic.New(anthropic.Config{
+	Client:  anthropic.Messages(&client),
+	Counter: anthropic.Counter(&client), // optional: preflight token counts
+	Engine:  eng,                        // the same engine and catalog as above
+	Catalog: cat,
+})
+
+res, err := governed.NewMessage(ctx, anthropic.Request{
+	BudgetID: "agents",
+	Params: anth.MessageNewParams{ // the SDK's own params, sent verbatim
+		Model:     anth.ModelClaudeOpus5,
+		MaxTokens: 1024,
+		Messages: []anth.MessageParam{
+			anth.NewUserMessage(anth.NewTextBlock("Summarize this in one sentence.")),
+		},
+	},
+})
+// res.Message is Anthropic's own *anth.Message.
+// res.Estimate, res.Usage, res.Cost, and res.Charge are the accounting.
+```
+
+Anthropic's usage counters are **additive and disjoint**, which is the opposite of OpenAI's:
+total input is `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`, and
+subtracting a cache read out of the fresh-input figure the way the Responses API requires
+would undercharge a cache-heavy request by orders of magnitude. throttle normalizes them
+without subtracting anything.
+
+Prompt-cache **lifetime is priced**, so it is dimensional rather than a footnote: a
+five-minute write and a one-hour write are separate usage dimensions at separate rates, cache
+reads are a third at their own much lower rate, and none of them is charged at the ordinary
+input rate. Where the response reports an undifferentiated cache-write total that its
+TTL-specific counters do not fully account for, the remainder is recorded as a cache write
+of unstated lifetime and the request settles as a floor — throttle does not guess the TTL
+from the request it sent.
+
+Two things follow the same rule as OpenAI's service tier. **Inference geography** changes
+token prices, and because the request may not name one, throttle captures every admissible
+rate sheet at admission and settles on the geography the response reports — from the frozen
+quote, never from the live catalog. A geography no rate was captured for settles
+pricing-unresolved rather than at the base rate. **Service tier**, by contrast, is not a
+monetary selector here: Anthropic's public token prices do not vary by it, so the tier is
+preserved as identity metadata and prices nothing. Where a real cost would depend on private
+contract terms, use an explicit pricing override; throttle will not invent a contract price.
+
+Server-side tools are accounted by who bills them. Web search is a **separate billable
+dimension**, priced per search from the captured fixture and added to the token cost exactly
+once. Your own client-side function execution has no invented Anthropic charge. And a
+hosted tool whose billing throttle cannot complete from the response — code execution,
+billed in container time nothing in the response reports — leaves the request refused under
+enforcement and settled as a token floor under monitoring, with the missing unit named. A
+server-side tool throttle has never seen makes cost completeness unknown rather than passing
+through as fully priced.
+
+Streaming Messages, the Batch API, and managed agents are not supported yet.
 
 ## Architectural rules
 

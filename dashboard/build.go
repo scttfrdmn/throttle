@@ -349,12 +349,18 @@ func scopeList(scopes []activity.Scope) string {
 // like a text request of the same size, which it is not: the same count costs several
 // times more, and the summary cell is the one place a reader scans before deciding
 // whether the money is worth a second look.
+//
+// TTL-specific cache writes get the same treatment for the same reason. They are input, so
+// they count into the input figure, and their lifetime is priced -- a one-hour write costs
+// materially more than a five-minute one -- so collapsing them into "in" alone would hide
+// the difference between two cells whose money differs.
 func usageSummary(items []report.UsageItem) string {
 	if len(items) == 0 {
 		return "—"
 	}
 	var in, out int64
 	var inAudio, outAudio int64
+	var write5m, write1h int64
 	var other []string
 	haveTokens := false
 	for _, it := range items {
@@ -373,6 +379,14 @@ func usageSummary(items []report.UsageItem) string {
 			out += it.Count
 			outAudio += it.Count
 			haveTokens = true
+		case "cache_write_5m_tokens":
+			in += it.Count
+			write5m += it.Count
+			haveTokens = true
+		case "cache_write_1h_tokens":
+			in += it.Count
+			write1h += it.Count
+			haveTokens = true
 		default:
 			other = append(other, fmt.Sprintf("%s %s", group(uint64(abs64(it.Count))), shortDimension(it.Dimension)))
 		}
@@ -384,6 +398,10 @@ func usageSummary(items []report.UsageItem) string {
 	if inAudio > 0 || outAudio > 0 {
 		parts = append(parts, fmt.Sprintf("audio %s in / %s out",
 			group(uint64(abs64(inAudio))), group(uint64(abs64(outAudio)))))
+	}
+	if write5m > 0 || write1h > 0 {
+		parts = append(parts, fmt.Sprintf("cache write %s 5m / %s 1h",
+			group(uint64(abs64(write5m))), group(uint64(abs64(write1h)))))
 	}
 	parts = append(parts, other...)
 	return strings.Join(parts, " · ")

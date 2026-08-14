@@ -511,13 +511,13 @@ func TestUnknownServiceTierIsUnpriceableRatherThanAdmittedRates(t *testing.T) {
 		t.Fatalf("For(%q) returned a quote for %s, want a refusal: pricing a tier by rates "+
 			"it was not captured for is the bug", served.ServiceTier, applicable.ProviderModelID)
 	}
-	if !errors.Is(err, pricing.ErrTierNotCaptured) {
+	if !errors.Is(err, pricing.ErrRatesNotCaptured) {
 		t.Errorf("err = %v, want ErrTierNotCaptured", err)
 	}
 
 	// The reason has to name the tier and what was known, or an operator cannot tell
 	// what to add to the catalog.
-	var tierErr *pricing.TierNotCapturedError
+	var tierErr *pricing.RateNotCapturedError
 	if !errors.As(err, &tierErr) {
 		t.Fatalf("err = %v, want a *TierNotCapturedError", err)
 	}
@@ -647,7 +647,7 @@ func TestCaptureRecordsTheTierItsRatesWerePricedFor(t *testing.T) {
 
 	// And because this model *is* priced by tier elsewhere, being served on the flex
 	// tier it asked for is still not something the frozen rates cover.
-	if _, err := quote.For(asked); !errors.Is(err, pricing.ErrTierNotCaptured) {
+	if _, err := quote.For(asked); !errors.Is(err, pricing.ErrRatesNotCaptured) {
 		t.Errorf("For(flex) = %v, want ErrTierNotCaptured: no flex rate was ever frozen", err)
 	}
 
@@ -714,7 +714,7 @@ func TestCatalogChangesAfterAdmissionCannotPriceAnUncapturedTier(t *testing.T) {
 		}
 
 		applicable, err := quote.For(served)
-		if !errors.Is(err, pricing.ErrTierNotCaptured) {
+		if !errors.Is(err, pricing.ErrRatesNotCaptured) {
 			t.Fatalf("round %d: For(turbo) = %v, want ErrTierNotCaptured however much the catalog has learned", i, err)
 		}
 		if priced, _ := applicable.Price(u); priced.Cost.Known() {

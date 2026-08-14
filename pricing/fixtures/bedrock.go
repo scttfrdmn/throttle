@@ -164,17 +164,23 @@ func agentCoreRuntime() []pricing.Price {
 var agentCoreEffectiveFrom = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 
 // Catalog returns a static catalog of every fixture in this package: the Bedrock
-// models, AgentCore Runtime resource rates, and the OpenAI models.
+// models, AgentCore Runtime resource rates, the OpenAI models, and the direct
+// Anthropic models.
 //
 // One catalog across access providers rather than one per provider, because that is
 // how a real deployment reaches more than one: prices key on (access provider,
 // provider model ID), so entries for different providers cannot collide, and
 // nothing that enumerates the catalog is confused by the mixture -- pricing.CaptureSet
 // filters by access provider before capturing.
+//
+// Claude appears twice, under "aws-bedrock" and under "anthropic", and that is the
+// point rather than a duplication: they are different access paths with different
+// rates and different model IDs, sharing only a publisher and a model family.
 func Catalog() (*pricing.Static, error) {
-	prices := make([]pricing.Price, 0, 64)
+	prices := make([]pricing.Price, 0, 96)
 	prices = append(prices, Bedrock()...)
 	prices = append(prices, agentCoreRuntime()...)
 	prices = append(prices, OpenAI()...)
+	prices = append(prices, Anthropic()...)
 	return pricing.NewStatic(prices...)
 }

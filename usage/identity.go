@@ -46,6 +46,21 @@ type ModelIdentity struct {
 	ServiceTier      string
 	InferenceProfile string
 	Endpoint         string
+
+	// InferenceGeo is the geography a provider performed inference in, when the
+	// provider treats that as a priced choice rather than as an endpoint.
+	//
+	// Distinct from Region, and the distinction is the reason this field exists.
+	// Region is the endpoint the request was sent to -- an address. InferenceGeo is
+	// a constraint on where the work may happen, requested as a parameter and
+	// reported back in the response, and it re-rates every token dimension of the
+	// request. A provider can have one, both, or neither.
+	//
+	// It is only ever the provider's own value, taken from the request parameter or
+	// the response. It is never inferred from a machine's location, an IP address,
+	// a cloud region, or a timezone: guessing it would produce a confident price
+	// computed from a rate sheet the request did not run under.
+	InferenceGeo string
 }
 
 // Known reports whether canonical enrichment was resolved. An identity can be
@@ -80,6 +95,10 @@ func (m ModelIdentity) Describe() string {
 	if m.Region != "" {
 		b.WriteString(" @")
 		b.WriteString(m.Region)
+	}
+	if m.InferenceGeo != "" {
+		b.WriteString(" geo:")
+		b.WriteString(m.InferenceGeo)
 	}
 	if m.ServiceTier != "" {
 		b.WriteString(" [")

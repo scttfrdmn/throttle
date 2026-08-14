@@ -36,56 +36,64 @@ var (
 	// error rather than a partial total.
 	ErrNoRate = errors.New("pricing: no rate for billable dimension")
 
-	// ErrTierNotCaptured reports that the provider served a request on a service
-	// tier no rate was frozen for at admission.
+	// ErrRatesNotCaptured reports that the provider served a request under access
+	// dimensions no rate was frozen for at admission: a service tier, an inference
+	// geography, or a combination of them.
 	//
-	// Distinct from ErrNoPrice: the model is priced, and priced by tier, but not for
-	// the tier that actually ran. There is nothing to fall back to -- a tier re-rates
-	// the whole request, so the tiers that were captured bound this one's cost in
-	// neither direction -- so the request is unpriceable on its own frozen basis and
-	// settles as unresolved.
-	ErrTierNotCaptured = errors.New("pricing: no captured rates for the service tier that served the request")
+	// Distinct from ErrNoPrice: the model is priced, and priced by that dimension,
+	// but not for the value that actually ran. There is nothing to fall back to --
+	// a tier or a geography re-rates the whole request, so the combinations that
+	// were captured bound this one's cost in neither direction -- so the request is
+	// unpriceable on its own frozen basis and settles as unresolved.
+	ErrRatesNotCaptured = errors.New("pricing: no captured rates for the access dimensions that served the request")
 )
 
-// tierUnqualified is how a quote whose rates are not tier-specific names itself in a
-// reason. Not a tier value and never compared against one: it exists so an operator
-// reading "captured: ..." is not shown an empty string.
-const tierUnqualified = "(not tier-specific)"
+// selectorUnqualified is how a quote whose rates are qualified by no access
+// dimension names itself in a reason. Not a dimension value and never compared
+// against one: it exists so an operator reading "captured: ..." is not shown an
+// empty string.
+const selectorUnqualified = "(not qualified by tier or geography)"
 
-// TierNotCapturedError says which tier served a request and which ones had rates.
+// RateNotCapturedError says which access dimensions served a request and which
+// combinations had rates.
 //
-// A typed error rather than a formatted string because the tier is the actionable
-// fact: an operator needs to know what to add to the catalog, and a later
+// A typed error rather than a formatted string because the dimensions are the
+// actionable fact: an operator needs to know what to add to the catalog, and a later
 // reconciliation needs to recognize the condition structurally rather than by parsing
 // prose. No provider response body is carried here -- only normalized identity.
-type TierNotCapturedError struct {
+type RateNotCapturedError struct {
 	// ProviderModelID is the model whose rates were frozen.
 	ProviderModelID string
 
-	// ServiceTier is the tier the provider reported actually serving the request.
-	ServiceTier string
+	// ServiceTier and InferenceGeo are what the provider reported actually serving
+	// the request. Either may be empty: only the axes the catalog prices by are
+	// compared, so only those can be the reason for a miss.
+	ServiceTier  string
+	InferenceGeo string
 
-	// Captured names the tiers the admission-time quote can price, in a stable
-	// order, so the reason says what was known and not merely what was missing.
+	// Captured names the access-dimension combinations the admission-time quote can
+	// price, in a stable order, so the reason says what was known and not merely
+	// what was missing.
 	Captured []string
 }
 
-func (e *TierNotCapturedError) Error() string {
+func (e *RateNotCapturedError) Error() string {
 	model := e.ProviderModelID
 	if model == "" {
 		model = "the model"
 	}
+	served := selector{serviceTier: e.ServiceTier, inferenceGeo: e.InferenceGeo}.describe()
 	if len(e.Captured) == 0 {
-		return fmt.Sprintf("%s was served on service tier %q, which no rate was captured for when this request was admitted",
-			model, e.ServiceTier)
+		return fmt.Sprintf("%s was served on %s, which no rate was captured for when this request was admitted",
+			model, served)
 	}
-	return fmt.Sprintf("%s was served on service tier %q, which was not among the tiers priced when this request was admitted (captured: %s)",
-		model, e.ServiceTier, strings.Join(e.Captured, ", "))
+	return fmt.Sprintf("%s was served on %s, which was not among the combinations priced when this request was admitted (captured: %s)",
+		model, served, strings.Join(e.Captured, ", "))
 }
 
 // Unwrap ties the typed error to the sentinel, so a caller can test for the
 // condition without knowing the type.
-func (e *TierNotCapturedError) Unwrap() error { return ErrTierNotCaptured }
+func (e *RateNotCapturedError) Unwrap() error { return ErrRatesNotCaptured }
 
 // Rate is the price of one billable dimension: PerUnit microdollars for every
 // Unit units consumed.
@@ -198,10 +206,16 @@ type Price struct {
 	AccessProvider  string
 	ProviderModelID string
 
-	// Region and ServiceTier narrow the price when they affect it. Empty matches
-	// any value, so a catalog need only spell out the dimensions that vary.
-	Region      string
-	ServiceTier string
+	// Region, ServiceTier, and InferenceGeo narrow the price when they affect it.
+	// Empty matches any value, so a catalog need only spell out the dimensions that
+	// vary.
+	//
+	// ServiceTier and InferenceGeo are the two that also qualify a captured quote:
+	// they re-rate every dimension of a request, and the provider decides which one
+	// served it. See selector and CapturedQuote.For.
+	Region       string
+	ServiceTier  string
+	InferenceGeo string
 
 	Rates      map[usage.Dimension]Rate
 	Provenance Provenance

@@ -78,11 +78,12 @@ func TestOpenAICachedInputIsDiscounted(t *testing.T) {
 	}
 }
 
-// everyFixture is every price this package produces, across both access providers.
+// everyFixture is every price this package produces, across every access provider.
 func everyFixture() []pricing.Price {
 	all := append([]pricing.Price(nil), Bedrock()...)
 	all = append(all, agentCoreRuntime()...)
-	return append(all, OpenAI()...)
+	all = append(all, OpenAI()...)
+	return append(all, Anthropic()...)
 }
 
 // Every fixture carries provenance identifying it as a fixture.

@@ -740,12 +740,12 @@ func TestQuoteSetRefusesAnUncapturedServiceTier(t *testing.T) {
 		}
 	}
 
-	if _, err := set.For(served); !errors.Is(err, pricing.ErrTierNotCaptured) {
+	if _, err := set.For(served); !errors.Is(err, pricing.ErrRatesNotCaptured) {
 		t.Errorf("For = %v, want ErrTierNotCaptured", err)
 	}
 
 	cost, priced, err := set.PriceComponents(steps)
-	if !errors.Is(err, pricing.ErrTierNotCaptured) {
+	if !errors.Is(err, pricing.ErrRatesNotCaptured) {
 		t.Fatalf("err = %v, want ErrTierNotCaptured", err)
 	}
 	if cost.Known() {

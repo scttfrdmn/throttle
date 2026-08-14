@@ -50,8 +50,18 @@ type CapturedQuote struct {
 	// non-empty value means the catalog priced this tier specifically.
 	//
 	// Coverage of the tier that eventually serves the request is decided from this
-	// field and Alternates alone. See For.
+	// field, InferenceGeo, and Alternates alone. See For.
 	ServiceTier string `json:"service_tier,omitempty"`
+
+	// InferenceGeo is the inference geography these rates are qualified for, on the
+	// same terms as ServiceTier: the row's value, never the request's, and empty
+	// meaning the catalog priced this model without reference to geography.
+	//
+	// It is a second axis of the same rule rather than a special case, because a
+	// provider that prices geography re-rates every token dimension by it and reports
+	// on the response which one served the call -- so a request that named none can
+	// still be served in a priced one, exactly as with tier. See selector.
+	InferenceGeo string `json:"inference_geo,omitempty"`
 
 	// Rates are the captured per-dimension prices. A dimension absent here cannot
 	// be priced by this quote, which is the condition that produces an unresolved
@@ -68,19 +78,42 @@ type CapturedQuote struct {
 	// re-resolving effective dates.
 	CapturedAt time.Time `json:"captured_at"`
 
-	// Alternates are quotes for the same model under service tiers other than the
-	// one requested, keyed by tier.
+	// Alternates are quotes for the same model under access dimensions other than the
+	// ones this quote is qualified for, keyed by a selector encoding.
 	//
-	// They exist because a provider may serve a request on a tier the caller did not
-	// ask for, at a different price. Which tier served the call is a fact about what
-	// happened, not a change to the price sheet -- so the alternates are captured at
-	// admission, from the same catalog at the same instant as the primary. Selecting
-	// one at settlement is still a replay of frozen rates; re-querying the live
-	// catalog to price a substituted tier would let a mid-request price refresh
-	// change the accounting basis, which is exactly what capturing prevents.
+	// They exist because a provider may serve a request on a tier or in a geography
+	// the caller did not ask for, at a different price. Which combination served the
+	// call is a fact about what happened, not a change to the price sheet -- so the
+	// alternates are captured at admission, from the same catalog at the same instant
+	// as the primary. Selecting one at settlement is still a replay of frozen rates;
+	// re-querying the live catalog to price a substituted tier would let a
+	// mid-request price refresh change the accounting basis, which is exactly what
+	// capturing prevents.
+	//
+	// The key is selector.key: a bare service tier when no geography is priced, which
+	// is byte-identical to what this map was keyed by before geography existed, so
+	// quotes persisted then still resolve. Read through For rather than directly.
 	//
 	// Alternates are one level deep: an alternate never carries its own.
 	Alternates map[string]CapturedQuote `json:"alternates,omitempty"`
+}
+
+// selector is the access-dimension combination these rates are qualified for.
+func (q CapturedQuote) selector() selector {
+	return selector{serviceTier: q.ServiceTier, inferenceGeo: q.InferenceGeo}
+}
+
+// capturedSelectors is every combination this quote can price: its own, plus each
+// valid alternate's.
+func (q CapturedQuote) capturedSelectors() []selector {
+	out := make([]selector, 0, len(q.Alternates)+1)
+	out = append(out, q.selector())
+	for _, alt := range q.Alternates {
+		if alt.Valid() {
+			out = append(out, alt.selector())
+		}
+	}
+	return out
 }
 
 // Valid reports whether the quote can price anything at all.
@@ -89,21 +122,26 @@ func (q CapturedQuote) Valid() bool {
 }
 
 // For selects the captured quote applicable to the identity the provider actually
-// served, which may name a different service tier than the request asked for.
+// served, which may name a different service tier or inference geography than the
+// request asked for.
 //
-// It never consults a catalog, and it never substitutes a rate it does not have. A
-// quote covers a served tier in exactly three cases:
+// It never consults a catalog, and it never substitutes a rate it does not have. The
+// served combination is first narrowed to the axes this quote's captured rates
+// actually distinguish -- a model no catalog row prices by tier is not made
+// unpriceable by a response reporting a tier -- and a quote then covers it in exactly
+// three cases:
 //
-//   - the served tier is the tier these rates are qualified for;
+//   - the narrowed combination is what these rates are qualified for;
 //   - an alternate frozen at admission is keyed by it;
-//   - these rates are not qualified by tier and no alternates were captured, which is
-//     the catalog asserting that tier does not affect this model's price.
+//   - narrowing left nothing, which is the catalog asserting that neither tier nor
+//     geography affects this model's price.
 //
-// Anything else returns a zero quote and a *TierNotCapturedError. That is the fix for
-// issue #30. Falling back to the admitted rates produced a cost that reported itself
-// as known while being computed from a price sheet the request did not run under, and
-// no direction of that error is safe: a tier re-rates every dimension of the request,
-// so the admitted rates bound the real cost neither above nor below. Whether a cost is
+// Anything else returns a zero quote and a *RateNotCapturedError. That is the fix for
+// issue #30, generalized to the second axis that behaves the same way. Falling back to
+// the admitted rates produced a cost that reported itself as known while being
+// computed from a price sheet the request did not run under, and no direction of that
+// error is safe: a tier or a geography re-rates every dimension of the request, so the
+// admitted rates bound the real cost neither above nor below. Whether a cost is
 // complete has to depend on what throttle knows, not on which way the provider's next
 // tier happens to move its prices.
 //
@@ -111,42 +149,27 @@ func (q CapturedQuote) Valid() bool {
 // ignores the error prices with an invalid quote and gets an unknown cost out of
 // Price, so misuse understates completeness instead of overstating it.
 func (q CapturedQuote) For(id usage.ModelIdentity) (CapturedQuote, error) {
-	if id.ServiceTier == "" || id.ServiceTier == q.ServiceTier {
+	captured := q.capturedSelectors()
+	want := narrow(selectorOf(id), captured)
+
+	// Narrowing left nothing to select on: there is nothing about this model's price
+	// that a tier or a geography distinguishes, so the frozen rates do cover whatever
+	// combination served the call.
+	if want.zero() {
 		return q, nil
 	}
-	if alt, ok := q.Alternates[id.ServiceTier]; ok && alt.Valid() {
+	if q.selector().covers(want) {
+		return q, nil
+	}
+	if alt, ok := q.Alternates[want.key()]; ok && alt.Valid() {
 		return alt, nil
 	}
-	// Rates the catalog priced without reference to tier, and no tier was priced
-	// separately: there is nothing about this model's price that a tier selects
-	// between, so the frozen rates do cover whatever tier served the call.
-	if q.ServiceTier == "" && len(q.Alternates) == 0 {
-		return q, nil
-	}
-	return CapturedQuote{}, &TierNotCapturedError{
+	return CapturedQuote{}, &RateNotCapturedError{
 		ProviderModelID: q.ProviderModelID,
-		ServiceTier:     id.ServiceTier,
-		Captured:        q.capturedTiers(),
+		ServiceTier:     want.serviceTier,
+		InferenceGeo:    want.inferenceGeo,
+		Captured:        selectorKeys(captured),
 	}
-}
-
-// capturedTiers names the tiers this quote can price, for the reason an operator
-// reads. The qualified tier is included, and an empty one is named as such rather
-// than omitted: "the rates were not tier-specific" is the useful fact there.
-func (q CapturedQuote) capturedTiers() []string {
-	out := make([]string, 0, len(q.Alternates)+1)
-	if q.ServiceTier != "" {
-		out = append(out, q.ServiceTier)
-	} else if len(q.Alternates) > 0 {
-		out = append(out, tierUnqualified)
-	}
-	for tier, alt := range q.Alternates {
-		if alt.Valid() {
-			out = append(out, tier)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // Rate returns the captured rate for a dimension.
